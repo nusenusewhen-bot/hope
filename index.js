@@ -152,7 +152,6 @@ class CaptchaSolver {
 
 class Generator {
     constructor() {
-        this.proxyRotator = { getNextProxy: () => null };
         this.email = new FreeEmailProvider();
         this.solver = new CaptchaSolver(CONFIG.captcha);
     }
@@ -181,7 +180,7 @@ class Generator {
         if (!emailData) return null;
 
         const browser = await puppeteer.launch({
-            headless: true,
+            headless: 'new',
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
         });
 
@@ -243,7 +242,17 @@ class Generator {
     async dropdown(page, label, val) {
         await page.click(`div[role="button"][aria-label*="${label}"]`);
         await this.delay(500, 1000);
-        await page.click(`div[role="option"]:has-text("${val}")`);
+        
+        await page.evaluate((value) => {
+            const options = document.querySelectorAll('div[role="option"]');
+            for (const opt of options) {
+                if (opt.textContent.trim() === value) {
+                    opt.click();
+                    return;
+                }
+            }
+        }, val);
+        
         await this.delay(500, 1000);
     }
 
