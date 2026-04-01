@@ -1,6 +1,5 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const RecaptchaPlugin = require('puppeteer-extra-plugin-recaptcha');
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
@@ -60,7 +59,6 @@ class ProxyRotator {
     }
 
     parseProxy(proxyString) {
-        // Format: ip:port or ip:port:user:pass
         const parts = proxyString.split(':');
         if (parts.length === 2) {
             return {
@@ -343,24 +341,20 @@ class DiscordGenerator {
             await page.setViewport({ width: 1366, height: 768 });
             await page.setUserAgent(this.getRandomUserAgent());
 
-            // Navigate to Discord register
             await page.goto(this.config.discord.registerUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
             const username = this.generateUsername();
             const birthday = this.generateBirthday();
             const password = emailData.password;
 
-            // Fill form with human-like behavior
             await this.fillField(page, 'input[name="email"]', emailData.email);
             await this.fillField(page, 'input[name="username"]', username);
             await this.fillField(page, 'input[name="password"]', password);
 
-            // Set birthday
             await this.setDropdown(page, 'Month', birthday.month);
             await this.setDropdown(page, 'Day', birthday.day.toString());
             await this.setDropdown(page, 'Year', birthday.year.toString());
 
-            // Check TOS checkbox
             await page.evaluate(() => {
                 const checkboxes = document.querySelectorAll('input[type="checkbox"]');
                 checkboxes.forEach(cb => {
@@ -371,7 +365,6 @@ class DiscordGenerator {
             await this.humanLikeDelay('submit');
             await page.click('button[type="submit"]');
 
-            // Handle captcha
             const token = await this.handleCaptcha(page);
             
             if (!token) {
@@ -382,7 +375,6 @@ class DiscordGenerator {
 
             console.log(chalk.green(`[+] Token obtained: ${token.substring(0, 20)}...`));
 
-            // Verify email
             const verifyUrl = await this.emailProvider.getVerificationEmail(
                 emailData.refreshToken,
                 emailData.clientId
@@ -440,28 +432,23 @@ class DiscordGenerator {
 
     async handleCaptcha(page) {
         try {
-            // Wait for captcha iframe
             await page.waitForSelector('iframe[src*="hcaptcha"]', { timeout: 10000 });
             
             const frames = await page.frames();
             const captchaFrame = frames.find(f => f.url().includes('hcaptcha'));
 
             if (!captchaFrame) {
-                // Check if already passed (passive)
                 const token = await this.extractToken(page);
                 if (token) return token;
                 return null;
             }
 
-            // Click checkbox
             await captchaFrame.waitForSelector('#checkbox');
             await captchaFrame.click('#checkbox');
 
-            // Wait for challenge
             await captchaFrame.waitForSelector('#menu-info', { timeout: 5000 });
             await captchaFrame.click('#menu-info');
 
-            // Open accessibility challenge
             await captchaFrame.waitForSelector('[role="menuitem"]');
             const menuItems = await captchaFrame.$$('[role="menuitem"]');
             
@@ -473,7 +460,6 @@ class DiscordGenerator {
                 }
             }
 
-            // Solve questions
             await captchaFrame.waitForSelector('input[name="captcha"]');
             
             let solved = false;
@@ -483,7 +469,6 @@ class DiscordGenerator {
             while (!solved && attempts < maxAttempts) {
                 const questionEl = await captchaFrame.$('[id^="prompt-text"]');
                 if (!questionEl) {
-                    // Check if solved
                     const token = await this.extractToken(page);
                     if (token) return token;
                     break;
@@ -523,7 +508,6 @@ class DiscordGenerator {
 
     async verifyEmail(token, verifyUrl) {
         try {
-            // Extract token from URL
             const urlToken = new URL(verifyUrl).searchParams.get('token');
             if (!urlToken) return false;
 
@@ -564,7 +548,6 @@ class DiscordGenerator {
     }
 }
 
-// Main execution
 async function main() {
     console.log(chalk.green(`
     ██████╗ ██╗███████╗ ██████╗ ██████╗ ██████╗ ██████╗ 
