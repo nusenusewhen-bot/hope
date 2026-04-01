@@ -290,8 +290,20 @@ class DiscordRegisterPage {
     }
 
     async getToken() {
-        const t = await this.page.evaluate(() => localStorage.getItem('token'));
-        return t ? t.replace(/"/g, '') : null;
+        // FIXED: Properly wrap localStorage access in page.evaluate with error handling
+        try {
+            const t = await this.page.evaluate(() => {
+                try {
+                    return window.localStorage ? window.localStorage.getItem('token') : null;
+                } catch (e) {
+                    return null;
+                }
+            });
+            return t ? t.replace(/"/g, '') : null;
+        } catch (err) {
+            console.log(chalk.yellow(`[Warning] Could not retrieve token: ${err.message}`));
+            return null;
+        }
     }
 
     async verifyEmail(token, verifyUrl) {
