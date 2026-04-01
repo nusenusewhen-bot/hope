@@ -9,8 +9,6 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "axios": "^1.6.2",
-    "https-proxy-agent": "^7.0.2",
-    "socks-proxy-agent": "^8.0.2",
     "chalk": "^4.1.2"
   }
 }
