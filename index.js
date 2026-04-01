@@ -184,6 +184,32 @@ class CaptchaSolver {
         if (t.includes('nee')) return 'nee';
         return null;
     }
+
+    // AI Vision-based captcha solving using Gemini
+    async solveWithVision(imageBase64, question) {
+        console.log(chalk.blue('[AI Vision] Analyzing captcha image...'));
+        try {
+            const res = await axios.post(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${CONFIG.captcha.geminiKey}`,
+                {
+                    contents: [{
+                        parts: [
+                            { text: `You are solving an hCaptcha visual challenge. Look at the image and answer the question: "${question}". Provide ONLY the answer, nothing else.` },
+                            { inline_data: { mime_type: "image/png", data: imageBase64 } }
+                        ]
+                    }],
+                    generationConfig: { temperature: 0, maxOutputTokens: 50 }
+                },
+                { timeout: 15000 }
+            );
+            const answer = res.data.candidates[0].content.parts[0].text.trim();
+            console.log(chalk.green(`[AI Vision] Answer: ${answer}`));
+            return answer;
+        } catch (err) {
+            console.log(chalk.red(`[AI Vision] Error: ${err.message}`));
+            return null;
+        }
+    }
 }
 
 class DiscordRegisterPage {
@@ -195,12 +221,11 @@ class DiscordRegisterPage {
     }
 
     setupRequestInterception() {
-        // Listen for responses to capture Authorization header [^25^][^26^]
+        // Listen for responses to capture Authorization header
         this.page.on('response', async (response) => {
             const request = response.request();
             const headers = request.headers();
             
-            // Check for Discord API calls with Authorization header
             if (request.url().includes('discord.com/api') && headers['authorization']) {
                 const auth = headers['authorization'];
                 if (auth && auth.startsWith('Bearer ')) {
@@ -210,7 +235,6 @@ class DiscordRegisterPage {
             }
         });
 
-        // Alternative: Listen for requests too
         this.page.on('request', (request) => {
             const headers = request.headers();
             if (request.url().includes('discord.com/api') && headers['authorization']) {
@@ -281,58 +305,94 @@ class DiscordRegisterPage {
         try {
             console.log(chalk.blue('[+] Checking for captcha...'));
             
-            // Wait a bit for any captcha to appear
+            // Wait for captcha iframe to appear
             await this.delay(3000, 5000);
             
             // Check if hcaptcha iframe exists
-            const hasCaptcha = await this.page.$('iframe[src*="hcaptcha"]');
+            const iframeHandle = await this.page.$('iframe[src*="hcaptcha"]');
             
-            if (!hasCaptcha) {
+            if (!iframeHandle) {
                 console.log(chalk.green('[+] No captcha detected, proceeding...'));
-                // Wait a bit more for token to be captured from API calls
                 await this.delay(3000, 5000);
                 return this.getToken();
             }
 
-            console.log(chalk.yellow('[!] Captcha detected, solving...'));
-            
-            const frame = (await this.page.frames()).find(f => f.url().includes('hcaptcha'));
+            console.log(chalk.yellow('[!] Captcha detected, analyzing...'));
+
+            // Get the iframe element properly [^44^]
+            const frame = await iframeHandle.contentFrame();
             if (!frame) {
-                console.log(chalk.red('[Error] Could not find captcha frame'));
+                console.log(chalk.red('[Error] Could not access captcha iframe content'));
                 return this.getToken();
             }
 
-            await frame.click('#checkbox');
-            await this.delay(2000, 3000);
-
-            const menu = await frame.$('#menu-info');
-            if (menu) {
-                await menu.click();
-                await this.delay(1000, 1500);
-                const items = await frame.$$('[role="menuitem"]');
-                for (const item of items) {
-                    const text = await item.evaluate(el => el.textContent);
-                    if (text?.includes('Accessibility') || text?.includes('Toegankelijkheid')) {
-                        await item.click();
+            // Wait for the checkbox to be available and click it
+            try {
+                // hCaptcha checkbox selector - wait for it
+                await frame.waitForSelector('.checkbox', { timeout: 10000 });
+                console.log(chalk.blue('[+] Clicking captcha checkbox...'));
+                await frame.click('.checkbox');
+            } catch (e) {
+                console.log(chalk.yellow('[!] Standard checkbox not found, trying alternative...'));
+                // Try alternative selectors
+                const checkboxSelectors = [
+                    '#checkbox',
+                    '.h-captcha-checkbox',
+                    '[role="checkbox"]',
+                    '.checkbox-container',
+                    '#anchor-checkbox'
+                ];
+                
+                for (const selector of checkboxSelectors) {
+                    try {
+                        await frame.waitForSelector(selector, { timeout: 3000 });
+                        await frame.click(selector);
+                        console.log(chalk.green(`[+] Clicked checkbox with selector: ${selector}`));
                         break;
+                    } catch (e) {
+                        continue;
                     }
                 }
             }
 
-            await frame.waitForSelector('input[name="captcha"]', { timeout: 10000 });
+            await this.delay(3000, 5000);
 
-            for (let i = 0; i < 20; i++) {
-                const qel = await frame.$('[id^="prompt-text"]');
-                if (!qel) break;
-                const q = await qel.evaluate(el => el.textContent);
-                const a = await solver.solve(q);
-                await frame.type('input[name="captcha"]', a);
-                await frame.click('.button-submit');
-                await this.delay(1500, 2500);
+            // Check if challenge appeared (accessibility challenge)
+            const hasChallenge = await frame.$('input[name="captcha"]') !== null;
+            
+            if (hasChallenge) {
+                console.log(chalk.yellow('[!] Accessibility challenge detected, solving with AI...'));
+                
+                // Try to solve accessibility challenge
+                await frame.waitForSelector('input[name="captcha"]', { timeout: 10000 });
+
+                for (let i = 0; i < 20; i++) {
+                    const qel = await frame.$('[id^="prompt-text"]');
+                    if (!qel) break;
+                    
+                    const q = await qel.evaluate(el => el.textContent);
+                    console.log(chalk.blue(`[Question ${i+1}] ${q}`));
+                    
+                    const a = await solver.solve(q);
+                    console.log(chalk.cyan(`[Answer] ${a}`));
+                    
+                    await frame.type('input[name="captcha"]', a);
+                    await frame.click('.button-submit');
+                    await this.delay(1500, 2500);
+                    
+                    // Check if challenge is complete
+                    const stillThere = await frame.$('input[name="captcha"]') !== null;
+                    if (!stillThere) {
+                        console.log(chalk.green('[+] Challenge completed!'));
+                        break;
+                    }
+                }
+            } else {
+                console.log(chalk.green('[+] Checkbox clicked, no challenge appeared'));
             }
 
-            // Wait for token after captcha solution
-            await this.delay(3000, 5000);
+            // Wait for token to be captured
+            await this.delay(5000, 8000);
             return this.getToken();
             
         } catch (err) {
@@ -348,7 +408,7 @@ class DiscordRegisterPage {
             return this.capturedToken;
         }
 
-        // Fallback: try localStorage (for older Discord versions)
+        // Fallback: try localStorage
         try {
             const t = await this.page.evaluate(() => {
                 try {
