@@ -2,7 +2,6 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const fs = require('fs').promises;
-const path = require('path');
 const chalk = require('chalk');
 const { z } = require('zod');
 
@@ -191,6 +190,36 @@ class DiscordRegisterPage {
     constructor(browser, page) {
         this.browser = browser;
         this.page = page;
+        this.capturedToken = null;
+        this.setupRequestInterception();
+    }
+
+    setupRequestInterception() {
+        // Listen for responses to capture Authorization header [^25^][^26^]
+        this.page.on('response', async (response) => {
+            const request = response.request();
+            const headers = request.headers();
+            
+            // Check for Discord API calls with Authorization header
+            if (request.url().includes('discord.com/api') && headers['authorization']) {
+                const auth = headers['authorization'];
+                if (auth && auth.startsWith('Bearer ')) {
+                    this.capturedToken = auth.replace('Bearer ', '');
+                    console.log(chalk.cyan(`[+] Token captured from network request!`));
+                }
+            }
+        });
+
+        // Alternative: Listen for requests too
+        this.page.on('request', (request) => {
+            const headers = request.headers();
+            if (request.url().includes('discord.com/api') && headers['authorization']) {
+                const auth = headers['authorization'];
+                if (auth && auth.startsWith('Bearer ')) {
+                    this.capturedToken = auth.replace('Bearer ', '');
+                }
+            }
+        });
     }
 
     static async create(config) {
@@ -250,9 +279,28 @@ class DiscordRegisterPage {
 
     async solveCaptcha(solver) {
         try {
-            await this.page.waitForSelector('iframe[src*="hcaptcha"]', { timeout: 30000 });
+            console.log(chalk.blue('[+] Checking for captcha...'));
+            
+            // Wait a bit for any captcha to appear
+            await this.delay(3000, 5000);
+            
+            // Check if hcaptcha iframe exists
+            const hasCaptcha = await this.page.$('iframe[src*="hcaptcha"]');
+            
+            if (!hasCaptcha) {
+                console.log(chalk.green('[+] No captcha detected, proceeding...'));
+                // Wait a bit more for token to be captured from API calls
+                await this.delay(3000, 5000);
+                return this.getToken();
+            }
+
+            console.log(chalk.yellow('[!] Captcha detected, solving...'));
+            
             const frame = (await this.page.frames()).find(f => f.url().includes('hcaptcha'));
-            if (!frame) return this.getToken();
+            if (!frame) {
+                console.log(chalk.red('[Error] Could not find captcha frame'));
+                return this.getToken();
+            }
 
             await frame.click('#checkbox');
             await this.delay(2000, 3000);
@@ -283,14 +331,24 @@ class DiscordRegisterPage {
                 await this.delay(1500, 2500);
             }
 
+            // Wait for token after captcha solution
+            await this.delay(3000, 5000);
             return this.getToken();
+            
         } catch (err) {
+            console.log(chalk.yellow(`[Warning] Captcha handling error: ${err.message}`));
             return this.getToken();
         }
     }
 
     async getToken() {
-        // FIXED: Properly wrap localStorage access in page.evaluate with error handling
+        // First try: use captured token from network interception
+        if (this.capturedToken) {
+            console.log(chalk.green(`[+] Using network-captured token`));
+            return this.capturedToken;
+        }
+
+        // Fallback: try localStorage (for older Discord versions)
         try {
             const t = await this.page.evaluate(() => {
                 try {
@@ -299,11 +357,16 @@ class DiscordRegisterPage {
                     return null;
                 }
             });
-            return t ? t.replace(/"/g, '') : null;
+            if (t) {
+                console.log(chalk.green(`[+] Using localStorage token`));
+                return t.replace(/"/g, '');
+            }
         } catch (err) {
-            console.log(chalk.yellow(`[Warning] Could not retrieve token: ${err.message}`));
-            return null;
+            console.log(chalk.yellow(`[Warning] localStorage access failed: ${err.message}`));
         }
+
+        console.log(chalk.red('[Error] No token captured from network or localStorage'));
+        return null;
     }
 
     async verifyEmail(token, verifyUrl) {
