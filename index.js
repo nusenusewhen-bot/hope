@@ -108,32 +108,37 @@ class DiscordRegisterPage {
         this.browser = browser;
         this.page = page;
         this.capturedToken = null;
+        this.registerResponse = null;
         this.setupRequestInterception();
     }
 
     setupRequestInterception() {
         this.page.on('request', (request) => {
             const url = request.url();
-            if (url.includes('discord.com/api')) {
-                console.log(chalk.cyan(`[REQUEST] ${request.method()} ${url}`));
+            if (url.includes('discord.com/api/v9/auth/register')) {
+                console.log(chalk.yellow(`[REGISTER REQUEST] ${request.method()} ${url}`));
+                this.lastRegisterRequest = request;
             }
         });
 
         this.page.on('response', async (response) => {
             const url = response.url();
-            if (url.includes('discord.com/api')) {
+            if (url.includes('discord.com/api/v9/auth/register')) {
                 const status = response.status();
-                console.log(chalk.cyan(`[RESPONSE] ${status} ${url}`));
+                console.log(chalk.yellow(`[REGISTER RESPONSE] Status: ${status}`));
+                this.registerResponse = { status, url };
                 
-                if (url.includes('register') || url.includes('users')) {
-                    console.log(chalk.green(`[REGISTER RESPONSE] Status: ${status}`));
-                    try {
-                        const body = await response.json();
-                        if (body.token) {
-                            this.capturedToken = body.token;
-                            console.log(chalk.green.bold(`[✓✓✓] TOKEN CAPTURED! [✓✓✓]`));
-                        }
-                    } catch (e) {}
+                try {
+                    const body = await response.json();
+                    console.log(chalk.yellow(`[REGISTER BODY]: ${JSON.stringify(body).slice(0, 300)}`));
+                    
+                    if (body.token) {
+                        this.capturedToken = body.token;
+                        console.log(chalk.green.bold(`[✓✓✓] TOKEN CAPTURED! [✓✓✓]`));
+                    }
+                } catch (e) {
+                    const text = await response.text().catch(() => '');
+                    console.log(chalk.yellow(`[REGISTER TEXT]: ${text.slice(0, 200)}`));
                 }
             }
         });
@@ -163,21 +168,18 @@ class DiscordRegisterPage {
             waitUntil: 'networkidle0', 
             timeout: 60000 
         });
-        await this.delay(2000, 3000);
+        await this.delay(3000, 5000); // Wait longer for rate limit cooldown
     }
 
     async fillForm(data) {
         console.log(chalk.blue('[+] Filling form...'));
         
-        // Fill fields
         await this.fillField('input[type="email"]', data.email);
         await this.fillField('input[name="username"]', data.username);
         await this.fillField('input[type="password"]', data.password);
-
-        // DOB
         await this.fillDOB(data.month, data.day, data.year);
         
-        // ToS checkbox
+        // Check ToS
         await this.page.evaluate(() => {
             document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
                 if (!cb.checked) cb.click();
@@ -193,35 +195,27 @@ class DiscordRegisterPage {
             const el = await this.page.waitForSelector(selector, { visible: true, timeout: 5000 });
             await el.click({ clickCount: 3 });
             await this.page.keyboard.press('Backspace');
-            
-            for (const char of value) {
-                await this.page.keyboard.type(char, { delay: Math.random() * 50 + 30 });
-            }
-            
+            await this.page.keyboard.type(value, { delay: 50 });
             await this.delay(200, 500);
         } catch (e) {
-            console.log(chalk.yellow(`[Failed to fill ${selector}]: ${e.message}`));
+            console.log(chalk.yellow(`[Failed ${selector}]: ${e.message}`));
         }
     }
 
     async fillDOB(month, day, year) {
         try {
             const dropdowns = await this.page.$$('div[role="button"][aria-haspopup="listbox"]');
+            const values = [month, day, year];
             
-            if (dropdowns.length >= 3) {
-                const values = [month, day, year];
-                for (let i = 0; i < 3; i++) {
-                    await dropdowns[i].click();
-                    await this.delay(500, 800);
-                    
-                    await this.page.evaluate((val) => {
-                        document.querySelectorAll('[role="option"]').forEach(opt => {
-                            if (opt.textContent.trim() === val) opt.click();
-                        });
-                    }, values[i]);
-                    
-                    await this.delay(500, 800);
-                }
+            for (let i = 0; i < 3; i++) {
+                await dropdowns[i].click();
+                await this.delay(500, 800);
+                await this.page.evaluate((val) => {
+                    document.querySelectorAll('[role="option"]').forEach(opt => {
+                        if (opt.textContent.trim() === val) opt.click();
+                    });
+                }, values[i]);
+                await this.delay(500, 800);
             }
         } catch (e) {
             console.log(chalk.yellow(`[DOB Error] ${e.message}`));
@@ -231,50 +225,42 @@ class DiscordRegisterPage {
     async submitAndSolveCaptcha(solver) {
         console.log(chalk.blue('[+] Submitting form...'));
         
-        // THE FIX: Look for "Create Account" button (lowercase comparison)
+        // Click Create Account button
         const clicked = await this.page.evaluate(() => {
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
             
             for (const btn of buttons) {
                 const text = btn.textContent.trim().toLowerCase();
-                
-                // Check for "create account" button
                 if (text.includes('create account') && !btn.disabled) {
-                    console.log(`[EVAL] Clicking: "${text}"`);
-                    
-                    // Scroll and click
                     btn.scrollIntoView({ behavior: 'instant', block: 'center' });
                     btn.click();
-                    
-                    // Also dispatch mouse event for reliability
-                    btn.dispatchEvent(new MouseEvent('click', { 
-                        bubbles: true, 
-                        cancelable: true, 
-                        view: window 
-                    }));
-                    
+                    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                     return { success: true, text: text };
                 }
             }
-            
-            // Fallback: try type="submit" button
-            const submitBtn = document.querySelector('button[type="submit"]');
-            if (submitBtn && !submitBtn.disabled) {
-                submitBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
-                submitBtn.click();
-                return { success: true, text: 'submit-type' };
-            }
-            
-            return { success: false, reason: 'No create account button found' };
+            return { success: false };
         });
         
         console.log(chalk.blue(`[CLICK RESULT]: ${JSON.stringify(clicked)}`));
-
-        if (!clicked.success) {
-            throw new Error(`Failed to click submit: ${clicked.reason}`);
-        }
-
         await this.delay(3000, 5000);
+
+        // Handle rate limit (429) - wait and retry
+        if (this.registerResponse?.status === 429) {
+            console.log(chalk.yellow('[!] Rate limited (429), waiting 10s...'));
+            await this.delay(10000, 15000);
+            
+            // Retry submission
+            await this.page.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('button')).find(b => 
+                    b.textContent.toLowerCase().includes('create account') && !b.disabled
+                );
+                if (btn) {
+                    btn.scrollIntoView();
+                    btn.click();
+                }
+            });
+            await this.delay(3000, 5000);
+        }
 
         // Check for captcha
         const hasCaptcha = await this.page.$('iframe[src*="hcaptcha"]') !== null;
@@ -290,46 +276,108 @@ class DiscordRegisterPage {
 
             const solution = await solver.solveHcaptcha('https://discord.com/register', siteKey);
             
+            // Inject solution
             await this.page.evaluate((token) => {
+                // Fill hCaptcha response
                 document.querySelectorAll('textarea').forEach(ta => {
                     if (ta.name.includes('h-captcha') || ta.id.includes('h-captcha')) {
                         ta.value = token;
                         ta.innerHTML = token;
-                        ['input', 'change'].forEach(evt => {
+                        ['focus', 'input', 'change', 'blur'].forEach(evt => {
                             ta.dispatchEvent(new Event(evt, { bubbles: true }));
                         });
                     }
                 });
+                
+                // Trigger any callbacks
+                const hcaptchaDiv = document.querySelector('.h-captcha');
+                if (hcaptchaDiv) {
+                    const callback = hcaptchaDiv.getAttribute('data-callback');
+                    if (callback && window[callback]) {
+                        window[callback](token);
+                    }
+                }
+                
+                // Alternative: try to find and call React props
+                const reactKey = Object.keys(document.querySelector('.h-captcha') || {}).find(k => k.startsWith('__react'));
+                if (reactKey) {
+                    const reactProps = document.querySelector('.h-captcha')[reactKey];
+                    if (reactProps?.children?.props?.onVerify) {
+                        reactProps.children.props.onVerify(token);
+                    }
+                }
             }, solution);
 
+            console.log(chalk.green('[+] Captcha solution injected'));
             await this.delay(2000, 3000);
+
+            // THE KEY FIX: Click Create Account AGAIN after captcha
+            console.log(chalk.blue('[+] Re-submitting after captcha...'));
             
-            // Click submit again after captcha
-            await this.page.evaluate(() => {
+            const reclickResult = await this.page.evaluate(() => {
                 const btn = Array.from(document.querySelectorAll('button')).find(b => 
                     b.textContent.toLowerCase().includes('create account') && !b.disabled
                 );
-                if (btn) btn.click();
+                
+                if (btn) {
+                    console.log('[EVAL] Re-clicking Create Account');
+                    btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    
+                    // Multiple click attempts
+                    btn.click();
+                    setTimeout(() => btn.click(), 100);
+                    setTimeout(() => btn.dispatchEvent(new MouseEvent('click', { bubbles: true })), 200);
+                    
+                    return { clicked: true, text: btn.textContent };
+                }
+                return { clicked: false };
             });
+            
+            console.log(chalk.blue(`[RECLICK RESULT]: ${JSON.stringify(reclickResult)}`));
+            
+            if (!reclickResult.clicked) {
+                // Fallback: try pressing Enter
+                await this.page.keyboard.press('Tab');
+                await this.delay(200, 400);
+                await this.page.keyboard.press('Enter');
+            }
         }
 
-        // Wait for API response
-        console.log(chalk.blue('[+] Waiting for API response...'));
+        // Wait for success with extended timeout
+        console.log(chalk.blue('[+] Waiting for registration to complete...'));
         
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 40; i++) {
             await this.delay(2000, 3000);
             
             const url = this.page.url();
-            console.log(chalk.blue(`[Check ${i+1}/30] URL: ${url}, HasToken: ${this.capturedToken ? 'YES' : 'NO'}`));
+            const hasToken = !!this.capturedToken;
             
+            console.log(chalk.blue(`[Check ${i+1}/40] URL: ${url}, Token: ${hasToken ? 'YES' : 'NO'}`));
+            
+            // SUCCESS: Token captured
             if (this.capturedToken) {
                 console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Token captured! [✓✓✓]`));
                 return this.capturedToken;
             }
             
+            // SUCCESS: Redirected to app
             if (url.includes('/channels') || url.includes('/app')) {
-                console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Redirected! [✓✓✓]`));
+                console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Redirected to app! [✓✓✓]`));
                 return await this.getTokenFromStorage();
+            }
+            
+            // Check for error messages on page
+            const errorText = await this.page.evaluate(() => {
+                const errors = document.querySelectorAll('[class*="error"], [class*="message"]');
+                for (const err of errors) {
+                    const text = err.textContent;
+                    if (text && text.length > 3 && !text.includes('available')) return text;
+                }
+                return null;
+            });
+            
+            if (errorText) {
+                console.log(chalk.red(`[PAGE ERROR]: ${errorText.slice(0, 150)}`));
             }
         }
 
@@ -404,7 +452,7 @@ class AccountGenerator {
             
             const token = await page.submitAndSolveCaptcha(this.captchaSolver);
             
-            if (!token) throw new Error('No token obtained');
+            if (!token) throw new Error('Registration failed - no token obtained');
 
             console.log(chalk.green.bold(`\n╔════════════════════════════════════════════════════════════╗`));
             console.log(chalk.green.bold(`║       [✓✓✓] ACCOUNT CREATED SUCCESSFULLY! [✓✓✓]           ║`));
