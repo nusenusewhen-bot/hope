@@ -2,200 +2,125 @@ const fs = require('fs-extra');
 const chalk = require('chalk');
 const { StealthBrowser } = require('./browser');
 const { CaptchaSolver } = require('./captcha');
+const config = require('./config');
 
-class AccountGenerator {
-    constructor(captchaKey) {
-        this.captchaSolver = new CaptchaSolver(captchaKey);
-        this.stats = { attempts: 0, success: 0, failed: 0, captchaSolved: 0 };
-        this.accounts = [];
+class Generator {
+    constructor() {
+        this.solver = new CaptchaSolver();
+        this.stats = { attempts: 0, success: 0, failed: 0 };
     }
 
-    generateUsername() {
-        const adjectives = ['Shadow', 'Silent', 'Dark', 'Ghost', 'Cyber', 'Neon', 'Phantom', 'Stealth', 'Night', 'Frost'];
-        const nouns = ['Hunter', 'Wraith', 'Ninja', 'Coder', 'Spectre', 'Viper', 'Drift', 'Wolf', 'Raven', 'Storm'];
-        const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-        const noun = nouns[Math.floor(Math.random() * nouns.length)];
-        const num = Math.floor(Math.random() * 99999);
-        return `${adj}${noun}${num}`;
-    }
-
-    generatePassword() {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-        let pass = '';
-        for (let i = 0; i < 16; i++) {
-            pass += chars[Math.floor(Math.random() * chars.length)];
-        }
-        return pass;
-    }
-
-    generateDOB() {
-        const months = ['January', 'February', 'March', 'April', 'May', 'June', 
-                       'July', 'August', 'September', 'October', 'November', 'December'];
+    randomUser() {
+        const adj = ['Shadow','Silent','Dark','Ghost','Cyber','Neon','Phantom'][Math.floor(Math.random()*7)];
+        const noun = ['Hunter','Wraith','Ninja','Coder','Spectre'][Math.floor(Math.random()*5)];
+        const num = Math.floor(Math.random()*99999);
+        const user = `${adj}${noun}${num}`;
         return {
-            month: months[Math.floor(Math.random() * 12)],
-            day: Math.floor(Math.random() * 28 + 1).toString(),
-            year: Math.floor(Math.random() * (2004 - 1990) + 1990).toString()
+            username: user,
+            email: `${user.toLowerCase()}${num}@gmail.com`,
+            password: Array(16).fill(0).map(() => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*'[Math.floor(Math.random()*72)]).join(''),
+            dob: {
+                month: ['January','February','March','April','May','June','July','August','September','October','November','December'][Math.floor(Math.random()*12)],
+                day: Math.floor(Math.random()*28+1).toString(),
+                year: Math.floor(Math.random()*(2004-1990)+1990).toString()
+            }
         };
     }
 
-    async generateAccount(proxy) {
+    async generate(proxy) {
         this.stats.attempts++;
         const browser = new StealthBrowser(proxy);
         let token = null;
 
         try {
-            console.log(chalk.blue(`\n[Gen] Starting with proxy ${proxy.id}`));
-            
+            console.log(chalk.blue(`\n[Gen] Using ${proxy.id}`));
             await browser.launch();
+            await browser.goto('https://discord.com/register');
+
+            // Check flagged
+            const flagged = await browser.page.locator('iframe[src*="hcaptcha"]').count() > 0;
+            if (flagged) throw new Error('Flagged IP');
+
+            const user = this.randomUser();
+            console.log(chalk.gray(`  ${user.email}`));
+
+            // Fill form
+            await browser.type('input[type="email"]', user.email);
+            await browser.type('input[name="username"]', user.username);
+            await browser.type('input[type="password"]', user.password);
+            await browser.selectDropdown(0, user.dob.month);
+            await browser.selectDropdown(1, user.dob.day);
+            await browser.selectDropdown(2, user.dob.year);
             
-            // Navigate to Discord register
-            await browser.navigate('https://discord.com/register');
-            
-            // Check for immediate captcha (flagged IP)
-            const hasCaptcha = await browser.page.locator('iframe[src*="hcaptcha"]').count() > 0;
-            if (hasCaptcha) {
-                console.log(chalk.yellow('[Gen] Proxy flagged (captcha on load)'));
-                throw new Error('Flagged IP');
-            }
-
-            // Generate account data
-            const username = this.generateUsername();
-            const email = `${username.toLowerCase()}${Math.floor(Math.random()*9999)}@gmail.com`;
-            const password = this.generatePassword();
-            const dob = this.generateDOB();
-
-            console.log(chalk.gray(`  Email: ${email}`));
-            console.log(chalk.gray(`  User: ${username}`));
-
-            // Fill form with human behavior
-            await browser.typeHuman('input[type="email"]', email);
-            await browser.typeHuman('input[name="username"]', username);
-            await browser.typeHuman('input[type="password"]', password);
-            
-            // Date of birth
-            await browser.selectDropdown(0, dob.month);
-            await browser.selectDropdown(1, dob.day);
-            await browser.selectDropdown(2, dob.year);
-
-            // Check TOS
             await browser.page.locator('input[type="checkbox"]').first().check();
-            await browser.humanDelay(500, 1000);
+            await browser.delay(500, 1000);
 
             // Submit
-            console.log(chalk.blue('[Gen] Submitting...'));
             await browser.page.locator('button:has-text("Continue")').first().click();
-            await browser.humanDelay(3000, 5000);
+            await browser.delay(3000, 5000);
 
-            // Check for captcha
-            const captchaFrame = await browser.page.locator('iframe[src*="hcaptcha"]').first();
-            const needsCaptcha = await captchaFrame.isVisible().catch(() => false);
-            
-            if (needsCaptcha) {
-                console.log(chalk.yellow('[Gen] Solving captcha...'));
+            // Handle captcha
+            const hasCaptcha = await browser.page.locator('iframe[src*="hcaptcha"]').first().isVisible().catch(() => false);
+            if (hasCaptcha) {
+                const siteKey = await browser.page.evaluate(() => document.querySelector('[data-sitekey]')?.dataset.sitekey || 'a9b5fb07-92ff-493f-86fe-352a2803b3df');
+                const solution = await this.solver.solve('https://discord.com/register', siteKey, proxy);
                 
-                const siteKey = await browser.page.evaluate(() => {
-                    return document.querySelector('[data-sitekey]')?.dataset.sitekey 
-                        || 'a9b5fb07-92ff-493f-86fe-352a2803b3df';
-                });
-
-                const solution = await this.captchaSolver.solveHcaptcha(
-                    'https://discord.com/register',
-                    siteKey,
-                    proxy
-                );
-                
-                this.stats.captchaSolved++;
-
-                // Inject solution
-                await browser.page.evaluate((token) => {
+                await browser.page.evaluate((tok) => {
                     document.querySelectorAll('textarea').forEach(ta => {
-                        if (ta.name.includes('h-captcha') || ta.id.includes('h-captcha')) {
-                            ta.value = token;
+                        if (ta.name.includes('h-captcha')) {
+                            ta.value = tok;
                             ta.dispatchEvent(new Event('input', { bubbles: true }));
                         }
                     });
                 }, solution);
-
-                await browser.humanDelay(2000, 3000);
                 
-                // Re-submit
+                await browser.delay(2000, 3000);
                 await browser.page.locator('button:has-text("Continue")').first().click();
-                await browser.humanDelay(5000, 8000);
+                await browser.delay(5000, 8000);
             }
 
-            // Wait for token
+            // Get token
             for (let i = 0; i < 15; i++) {
-                // Try to get token from localStorage
-                token = await browser.page.evaluate(() => {
-                    return localStorage.getItem('token')?.replace(/"/g, '');
-                });
-                
+                token = await browser.page.evaluate(() => localStorage.getItem('token')?.replace(/"/g, ''));
                 if (token) break;
-
-                // Check URL for success
+                
                 const url = browser.page.url();
                 if (url.includes('/channels') || url.includes('/app')) {
-                    token = await browser.page.evaluate(() => {
-                        return localStorage.getItem('token')?.replace(/"/g, '');
-                    });
+                    token = await browser.page.evaluate(() => localStorage.getItem('token')?.replace(/"/g, ''));
                     break;
                 }
-
-                // Check for errors
-                const errorText = await browser.page.locator('text=/rate limited|already registered|invalid/i').first().innerText().catch(() => null);
-                if (errorText) {
-                    throw new Error(errorText);
-                }
-
-                await browser.humanDelay(1000, 2000);
+                
+                const err = await browser.page.locator('text=/rate limited|already registered/i').first().innerText().catch(() => null);
+                if (err) throw new Error(err);
+                
+                await browser.delay(1000, 1500);
             }
 
-            if (!token) {
-                throw new Error('No token captured');
-            }
+            if (!token) throw new Error('No token');
 
-            // Success
             this.stats.success++;
-            const account = {
-                email,
-                password,
-                username,
-                token,
-                proxy: proxy.id,
-                createdAt: new Date().toISOString()
-            };
+            const account = { ...user, token, proxy: proxy.id, createdAt: new Date().toISOString() };
             
-            this.accounts.push(account);
-            await this.saveAccount(account);
-            
-            console.log(chalk.green.bold('  ✓ Account created successfully!'));
+            await fs.appendFile('/tmp/accounts.txt', `${account.email}:${account.password}:${account.token}:${account.proxy}\n`);
+            console.log(chalk.green.bold('  ✓ Success'));
             
             return account;
 
         } catch (err) {
             this.stats.failed++;
-            console.log(chalk.red(`  ✗ Failed: ${err.message}`));
+            console.log(chalk.red(`  ✗ ${err.message}`));
             throw err;
         } finally {
             await browser.close();
         }
     }
 
-    async saveAccount(account) {
-        const line = `${account.email}:${account.password}:${account.token}:${account.proxy}\n`;
-        await fs.appendFile('accounts.txt', line);
-    }
-
     printStats() {
-        console.log(chalk.cyan.bold('\n╔════════════════════════════════════════╗'));
-        console.log(chalk.cyan.bold('║           GENERATION STATS             ║'));
-        console.log(chalk.cyan.bold('╠════════════════════════════════════════╣'));
-        console.log(chalk.white(`║  Attempts:      ${this.stats.attempts.toString().padEnd(23)}║`));
-        console.log(chalk.green(`║  Successful:    ${this.stats.success.toString().padEnd(23)}║`));
-        console.log(chalk.red(`║  Failed:        ${this.stats.failed.toString().padEnd(23)}║`));
-        console.log(chalk.yellow(`║  Captchas:      ${this.stats.captchaSolved.toString().padEnd(23)}║`));
-        console.log(chalk.cyan.bold('╚════════════════════════════════════════╝'));
+        console.log(chalk.cyan.bold('\n=== STATS ==='));
+        console.log(`Attempts: ${this.stats.attempts}`);
+        console.log(chalk.green(`Success: ${this.stats.success}`));
+        console.log(chalk.red(`Failed: ${this.stats.failed}`));
     }
 }
 
-module.exports = { AccountGenerator };
+module.exports = { Generator };
