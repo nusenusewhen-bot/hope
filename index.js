@@ -3,14 +3,11 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const fs = require('fs').promises;
 const chalk = require('chalk');
-const { z } = require('zod');
 
 puppeteer.use(StealthPlugin());
 
 const CONFIG = {
-    captcha: {
-        antiCaptchaKey: process.env.ANTICAPTCHA_KEY || '373271de10fac6ff5aa75a2928acd339'
-    }
+    antiCaptchaKey: process.env.ANTICAPTCHA_KEY || '373271de10fac6ff5aa75a2928acd339'
 };
 
 class AntiCaptchaSolver {
@@ -29,7 +26,7 @@ class AntiCaptchaSolver {
                 websiteURL: pageUrl,
                 websiteKey: siteKey
             }
-        });
+        }, { timeout: 30000 });
 
         if (createRes.data.errorId !== 0) {
             throw new Error(`AntiCaptcha error: ${createRes.data.errorDescription}`);
@@ -38,29 +35,24 @@ class AntiCaptchaSolver {
         const taskId = createRes.data.taskId;
         console.log(chalk.blue(`[AntiCaptcha] Task created: ${taskId}`));
 
-        // Poll for result
         for (let i = 0; i < 60; i++) {
             await new Promise(r => setTimeout(r, 5000));
             
             const result = await axios.post(`${this.baseUrl}/getTaskResult`, {
                 clientKey: this.apiKey,
                 taskId: taskId
-            });
-
-            console.log(chalk.blue(`[AntiCaptcha] Polling ${i + 1}/60: ${result.data.status}`));
+            }, { timeout: 30000 });
 
             if (result.data.status === 'ready') {
                 console.log(chalk.green(`[AntiCaptcha] Solution received!`));
                 return result.data.solution.gRecaptchaResponse;
             }
         }
-        throw new Error('AntiCaptcha timeout');
+        throw new Error('Timeout');
     }
 
     async getBalance() {
-        const res = await axios.post(`${this.baseUrl}/getBalance`, {
-            clientKey: this.apiKey
-        });
+        const res = await axios.post(`${this.baseUrl}/getBalance`, { clientKey: this.apiKey });
         return res.data.balance;
     }
 }
@@ -116,39 +108,33 @@ class DiscordRegisterPage {
         this.browser = browser;
         this.page = page;
         this.capturedToken = null;
-        this.accountCreated = false;
+        this.apiResponse = null;
         this.setupRequestInterception();
     }
 
     setupRequestInterception() {
-        this.page.on('response', async (response) => {
-            const request = response.request();
+        this.page.on('request', (request) => {
             const url = request.url();
-            
-            // Capture token from any API call
-            if (url.includes('discord.com/api')) {
-                const headers = request.headers();
-                if (headers['authorization'] && headers['authorization'].startsWith('Bearer ')) {
-                    this.capturedToken = headers['authorization'].replace('Bearer ', '');
-                    console.log(chalk.cyan(`[+] Token captured!`));
-                }
+            if (url.includes('discord.com/api/v9/auth/register') || url.includes('discord.com/api/v9/users')) {
+                console.log(chalk.cyan(`[REQUEST] ${url}`));
+                this.captureRequest = request;
+            }
+        });
+
+        this.page.on('response', async (response) => {
+            const url = response.url();
+            if (url.includes('discord.com/api/v9/auth/register') || url.includes('discord.com/api/v9/users')) {
+                console.log(chalk.cyan(`[RESPONSE] ${url} - Status: ${response.status()}`));
                 
-                // Check for register endpoint
-                if (url.includes('/auth/register') || url.includes('/users')) {
-                    const status = response.status();
-                    console.log(chalk.blue(`[API Response] ${url} - Status: ${status}`));
+                try {
+                    const body = await response.json();
+                    this.apiResponse = body;
                     
-                    if (status === 200 || status === 201) {
-                        this.accountCreated = true;
-                        try {
-                            const body = await response.json();
-                            if (body.token) {
-                                this.capturedToken = body.token;
-                                console.log(chalk.green(`[+] Token from response body!`));
-                            }
-                        } catch (e) {}
+                    if (body.token) {
+                        this.capturedToken = body.token;
+                        console.log(chalk.green.bold(`[✓✓✓] TOKEN CAPTURED FROM API! [✓✓✓]`));
                     }
-                }
+                } catch (e) {}
             }
         });
     }
@@ -174,59 +160,55 @@ class DiscordRegisterPage {
 
     async navigate() {
         await this.page.goto('https://discord.com/register', { 
-            waitUntil: 'networkidle2', 
+            waitUntil: 'networkidle0', 
             timeout: 60000 
         });
-        await this.delay(3000, 4000);
+        await this.delay(2000, 3000);
     }
 
     async fillForm(data) {
-        console.log(chalk.blue('[+] Filling form...'));
+        console.log(chalk.blue('[+] Filling form with human-like behavior...'));
         
-        // Wait for form to be ready
-        await this.page.waitForSelector('input[type="email"], form', { visible: true, timeout: 15000 });
-        
-        // Fill using evaluate for reliability
-        await this.page.evaluate((formData) => {
-            // Find all inputs
-            const inputs = document.querySelectorAll('input');
-            
-            inputs.forEach(input => {
-                const type = input.type || input.getAttribute('type');
-                const placeholder = input.placeholder?.toLowerCase() || '';
-                const name = input.name?.toLowerCase() || '';
+        // Use more reliable selectors and human-like typing
+        const fillField = async (selector, value) => {
+            try {
+                const el = await this.page.waitForSelector(selector, { visible: true, timeout: 5000 });
+                await el.click({ clickCount: 3 });
+                await this.page.keyboard.press('Backspace');
                 
-                // Email
-                if (type === 'email' || name.includes('email') || placeholder.includes('email')) {
-                    input.focus();
-                    input.value = formData.email;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                // Type with realistic delays
+                for (const char of value) {
+                    await this.page.keyboard.type(char, { delay: Math.random() * 100 + 50 });
+                    if (Math.random() > 0.8) await this.delay(100, 300); // occasional pause
                 }
-                // Username
-                else if (name.includes('username') || placeholder.includes('username')) {
-                    input.focus();
-                    input.value = formData.username;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                // Password
-                else if (type === 'password' || name.includes('password') || placeholder.includes('password')) {
-                    input.focus();
-                    input.value = formData.password;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            });
-        }, { email: data.email, username: data.username, password: data.password });
+                
+                await this.delay(200, 500);
+                return true;
+            } catch (e) {
+                return false;
+            }
+        };
 
-        // Handle DOB dropdowns
+        // Try multiple selectors for each field
+        const emailFilled = await fillField('input[type="email"]', data.email) || 
+                           await fillField('input[name="email"]', data.email);
+        
+        const usernameFilled = await fillField('input[name="username"]', data.username) ||
+                              await fillField('input[placeholder*="username" i]', data.username);
+        
+        const passwordFilled = await fillField('input[type="password"]', data.password) ||
+                              await fillField('input[name="password"]', data.password);
+
+        if (!emailFilled || !usernameFilled || !passwordFilled) {
+            throw new Error('Failed to fill all fields');
+        }
+
+        // Fill DOB
         await this.fillDOB(data.month, data.day, data.year);
         
-        // Check ToS if exists
+        // Check ToS
         await this.page.evaluate(() => {
-            const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-            checkboxes.forEach(cb => {
+            document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
                 if (!cb.checked) {
                     cb.click();
                     cb.dispatchEvent(new Event('change', { bubbles: true }));
@@ -239,204 +221,195 @@ class DiscordRegisterPage {
     }
 
     async fillDOB(month, day, year) {
-        // Try to find and click dropdowns
-        const dropdowns = await this.page.$$('[role="button"], div[class*="select"]');
-        
-        if (dropdowns.length >= 3) {
-            // Month
-            await dropdowns[0].click();
-            await this.delay(500, 800);
-            await this.selectDropdownValue(month);
+        try {
+            // Find all dropdowns
+            const dropdowns = await this.page.$$('div[role="button"][aria-haspopup="listbox"], div[class*="select"]');
             
-            // Day
-            await dropdowns[1].click();
-            await this.delay(500, 800);
-            await this.selectDropdownValue(day);
-            
-            // Year
-            await dropdowns[2].click();
-            await this.delay(500, 800);
-            await this.selectDropdownValue(year);
+            if (dropdowns.length >= 3) {
+                // Month
+                await dropdowns[0].click();
+                await this.delay(500, 800);
+                await this.page.evaluate((m) => {
+                    document.querySelectorAll('[role="option"]').forEach(opt => {
+                        if (opt.textContent.trim() === m) opt.click();
+                    });
+                }, month);
+                await this.delay(500, 800);
+
+                // Day
+                await dropdowns[1].click();
+                await this.delay(500, 800);
+                await this.page.evaluate((d) => {
+                    document.querySelectorAll('[role="option"]').forEach(opt => {
+                        if (opt.textContent.trim() === d) opt.click();
+                    });
+                }, day);
+                await this.delay(500, 800);
+
+                // Year
+                await dropdowns[2].click();
+                await this.delay(500, 800);
+                await this.page.evaluate((y) => {
+                    document.querySelectorAll('[role="option"]').forEach(opt => {
+                        if (opt.textContent.trim() === y) opt.click();
+                    });
+                }, year);
+            }
+        } catch (e) {
+            console.log(chalk.yellow(`[Warning] DOB fill: ${e.message}`));
         }
     }
 
-    async selectDropdownValue(value) {
-        await this.page.evaluate((val) => {
-            // Try to find and click the option
-            const options = document.querySelectorAll('[role="option"], div[class*="option"]');
-            for (const opt of options) {
-                if (opt.textContent.trim() === val) {
-                    opt.click();
-                    return true;
-                }
-            }
-            // If not found by text, try scrolling
-            const allDivs = document.querySelectorAll('div');
-            for (const div of allDivs) {
-                if (div.textContent.trim() === val && div.getAttribute('role') !== 'listbox') {
-                    div.click();
-                    return true;
-                }
-            }
-            return false;
-        }, value);
-        await this.delay(500, 1000);
-    }
-
     async submitAndSolveCaptcha(solver) {
-        console.log(chalk.blue('[+] Submitting...'));
+        console.log(chalk.blue('[+] Submitting form...'));
         
-        // Click the submit button using JavaScript
-        const clicked = await this.page.evaluate(() => {
-            // Find submit button
-            const buttons = Array.from(document.querySelectorAll('button'));
-            const submitBtn = buttons.find(b => {
-                const text = b.textContent.toLowerCase();
-                return (text.includes('continue') || text.includes('register') || 
-                        text.includes('sign up') || b.type === 'submit') && !b.disabled;
-            });
-            
-            if (submitBtn) {
-                submitBtn.click();
-                submitBtn.dispatchEvent(new Event('click', { bubbles: true }));
-                return true;
+        // Take screenshot before
+        await this.page.screenshot({ path: 'before_submit.png' });
+        
+        // Try multiple submission methods
+        let submitted = false;
+        
+        // Method 1: Find and click the actual submit button by text
+        submitted = await this.page.evaluate(() => {
+            const allElements = document.querySelectorAll('button, div[role="button"]');
+            for (const el of allElements) {
+                const text = el.textContent.toLowerCase().trim();
+                // Discord uses "Continue" or "Register"
+                if ((text === 'continue' || text === 'register' || text === 'sign up') && !el.disabled) {
+                    // Scroll into view
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    
+                    // Multiple click attempts
+                    setTimeout(() => el.click(), 100);
+                    setTimeout(() => {
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    }, 200);
+                    
+                    return true;
+                }
             }
             return false;
         });
 
-        if (!clicked) {
-            throw new Error('Could not find submit button');
+        if (!submitted) {
+            // Method 2: Press Enter on last field
+            await this.page.keyboard.press('Tab'); // Move to button
+            await this.delay(200, 400);
+            await this.page.keyboard.press('Enter');
         }
 
         await this.delay(3000, 5000);
 
         // Check for captcha
-        console.log(chalk.blue('[+] Checking for captcha...'));
+        const hasCaptcha = await this.page.$('iframe[src*="hcaptcha"]') !== null;
         
-        const hasCaptcha = await this.page.evaluate(() => {
-            return !!document.querySelector('iframe[src*="hcaptcha"]');
-        });
-
         if (hasCaptcha) {
             console.log(chalk.yellow('[!] Captcha detected!'));
             
             const siteKey = await this.page.evaluate(() => {
-                const el = document.querySelector('[data-sitekey]');
-                return el ? el.getAttribute('data-sitekey') : 'f5561ba9-8f1e-40ca-9b5b-a0b3f719ef34';
+                return document.querySelector('[data-sitekey]')?.getAttribute('data-sitekey') || 
+                       'f5561ba9-8f1e-40ca-9b5b-a0b3f719ef34';
             });
 
             const solution = await solver.solveHcaptcha('https://discord.com/register', siteKey);
             
-            // Inject solution
+            // Inject solution properly
             await this.page.evaluate((token) => {
-                // Find hcaptcha response field
-                const textareas = document.querySelectorAll('textarea');
-                textareas.forEach(ta => {
+                // Fill textarea
+                document.querySelectorAll('textarea').forEach(ta => {
                     if (ta.name.includes('h-captcha') || ta.id.includes('h-captcha')) {
                         ta.value = token;
                         ta.innerHTML = token;
-                        ta.dispatchEvent(new Event('input', { bubbles: true }));
+                        ['focus', 'input', 'change', 'blur'].forEach(evt => {
+                            ta.dispatchEvent(new Event(evt, { bubbles: true }));
+                        });
                     }
                 });
                 
-                // Trigger any callbacks
-                if (window.hcaptcha) {
-                    try {
-                        window.hcaptcha.setResponse(token);
-                    } catch(e) {}
+                // Trigger hcaptcha callback if exists
+                const hcaptchaDiv = document.querySelector('.h-captcha');
+                if (hcaptchaDiv) {
+                    const callback = hcaptchaDiv.getAttribute('data-callback');
+                    if (callback && window[callback]) {
+                        window[callback](token);
+                    }
                 }
                 
-                // Look for data-callback
-                const hcaptchaDiv = document.querySelector('[data-callback]');
-                if (hcaptchaDiv) {
-                    const callbackName = hcaptchaDiv.getAttribute('data-callback');
-                    if (window[callbackName]) {
-                        window[callbackName](token);
+                // Also try to find any callback in page scripts
+                for (const key in window) {
+                    if (typeof window[key] === 'function' && 
+                        (key.includes('callback') || key.includes('hcaptcha'))) {
+                        try { window[key](token); } catch(e) {}
                     }
                 }
             }, solution);
 
-            console.log(chalk.green('[+] Captcha solution injected'));
             await this.delay(2000, 3000);
 
-            // Click submit again
+            // Submit again after captcha
             await this.page.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('button'));
-                const submitBtn = buttons.find(b => {
-                    const text = b.textContent.toLowerCase();
-                    return (text.includes('continue') || text.includes('register')) && !b.disabled;
-                });
-                if (submitBtn) submitBtn.click();
+                const btn = Array.from(document.querySelectorAll('button')).find(b => 
+                    b.textContent.toLowerCase().includes('continue') && !b.disabled
+                );
+                if (btn) {
+                    btn.scrollIntoView();
+                    btn.click();
+                }
             });
         }
 
-        // Wait for result
-        console.log(chalk.blue('[+] Waiting for result...'));
+        // Wait for API response with extended timeout
+        console.log(chalk.blue('[+] Waiting for Discord API response...'));
         
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 40; i++) {
             await this.delay(2000, 3000);
             
-            const url = this.page.url();
-            console.log(chalk.blue(`[Check ${i+1}/30] URL: ${url}`));
-            
-            // Success indicators
-            if (url.includes('/channels') || url.includes('/app') || url.includes('/verify')) {
-                console.log(chalk.green.bold(`[✓✓✓] REDIRECTED TO APP! SUCCESS! [✓✓✓]`));
-                this.accountCreated = true;
-                break;
-            }
-            
+            // Check if we got API response
             if (this.capturedToken) {
-                console.log(chalk.green.bold(`[✓✓✓] TOKEN CAPTURED! SUCCESS! [✓✓✓]`));
-                this.accountCreated = true;
-                break;
+                console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Token captured! [✓✓✓]`));
+                return this.capturedToken;
             }
-
-            // Check for error messages
-            const errorMsg = await this.page.evaluate(() => {
-                const errors = document.querySelectorAll('[class*="error"], [class*="message"]');
+            
+            // Check URL change
+            const url = this.page.url();
+            if (url.includes('/channels') || url.includes('/app')) {
+                console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Redirected to app! [✓✓✓]`));
+                return await this.getTokenFromStorage();
+            }
+            
+            // Check for errors
+            const errorText = await this.page.evaluate(() => {
+                const errors = document.querySelectorAll('[class*="error"], [class*="message"], [class*="alert"]');
                 for (const err of errors) {
                     const text = err.textContent;
-                    if (text && !text.includes('available') && !text.includes('Nice')) {
-                        return text;
-                    }
+                    if (text && text.length > 3 && !text.includes('available')) return text;
                 }
                 return null;
             });
-
-            if (errorMsg && errorMsg.includes('captcha')) {
-                console.log(chalk.yellow(`[Captcha required]: ${errorMsg}`));
-                // Try to solve again if needed
-            } else if (errorMsg) {
-                console.log(chalk.red(`[Error on page]: ${errorMsg}`));
+            
+            if (errorText) {
+                console.log(chalk.red(`[Page Error]: ${errorText.slice(0, 150)}`));
             }
         }
 
-        return await this.getToken();
-    }
-
-    async getToken() {
-        if (this.capturedToken) {
-            return this.capturedToken;
-        }
-
-        // Try localStorage
-        try {
-            const token = await this.page.evaluate(() => {
-                return window.localStorage?.getItem('token')?.replace(/"/g, '');
-            });
-            if (token) {
-                console.log(chalk.green(`[+] Token from localStorage`));
-                return token;
-            }
-        } catch (e) {}
-
-        // If account created but no token
-        if (this.accountCreated) {
-            return 'ACCOUNT_CREATED_NO_TOKEN';
+        // If no token but we have API response, maybe it succeeded
+        if (this.apiResponse) {
+            console.log(chalk.yellow(`[API Response]: ${JSON.stringify(this.apiResponse).slice(0, 200)}`));
         }
 
         return null;
+    }
+
+    async getTokenFromStorage() {
+        try {
+            const token = await this.page.evaluate(() => {
+                return window.localStorage?.getItem('token')?.replace(/"/g, '') ||
+                       document.cookie.match(/token=([^;]+)/)?.[1];
+            });
+            return token || 'ACCOUNT_CREATED_NO_TOKEN';
+        } catch (e) {
+            return 'ACCOUNT_CREATED_NO_TOKEN';
+        }
     }
 
     async verifyEmail(token, verifyUrl) {
@@ -449,7 +422,6 @@ class DiscordRegisterPage {
                 { token: urlToken },
                 { headers: { Authorization: token } }
             );
-            
             return res.status === 200 || res.status === 204;
         } catch (err) {
             return false;
@@ -480,7 +452,6 @@ class AccountGenerator {
         try {
             const balance = await this.captchaSolver.getBalance();
             console.log(chalk.blue(`[AntiCaptcha] Balance: $${balance}`));
-            
             if (balance < 0.002) throw new Error('Balance too low');
 
             email = await this.emailProvider.createAccount();
@@ -500,7 +471,7 @@ class AccountGenerator {
             
             if (!token) throw new Error('No token obtained');
 
-            // SUCCESS
+            // SUCCESS OUTPUT
             console.log(chalk.green.bold(`\n╔════════════════════════════════════════════════════════════╗`));
             console.log(chalk.green.bold(`║       [✓✓✓] ACCOUNT CREATED SUCCESSFULLY! [✓✓✓]           ║`));
             console.log(chalk.green.bold(`╠════════════════════════════════════════════════════════════╣`));
@@ -515,7 +486,6 @@ class AccountGenerator {
             
             console.log(chalk.green.bold(`╚════════════════════════════════════════════════════════════╝\n`));
 
-            // Verify email
             let verified = false;
             try {
                 const verifyUrl = await this.emailProvider.getVerificationEmail(email.token, 60000);
@@ -541,8 +511,8 @@ class AccountGenerator {
     }
 
     genUsername() {
-        const adj = ['Shadow', 'Silent', 'Dark', 'Ghost', 'Cyber', 'Neo'][Math.floor(Math.random() * 6)];
-        const noun = ['Hunter', 'Wraith', 'Ninja', 'Coder', 'Punk'][Math.floor(Math.random() * 5)];
+        const adj = ['Shadow', 'Silent', 'Dark', 'Ghost', 'Cyber', 'Neo', 'Tech'][Math.floor(Math.random() * 7)];
+        const noun = ['Hunter', 'Wraith', 'Ninja', 'Coder', 'Punk', 'Runner'][Math.floor(Math.random() * 6)];
         return `${adj}${noun}${Math.floor(Math.random() * 99999)}`;
     }
 
@@ -567,7 +537,7 @@ async function main() {
     
     const gen = new AccountGenerator({
         emailProvider: new MailTmProvider(),
-        captchaSolver: new AntiCaptchaSolver(CONFIG.captcha.antiCaptchaKey)
+        captchaSolver: new AntiCaptchaSolver(CONFIG.antiCaptchaKey)
     });
 
     try {
