@@ -14,14 +14,11 @@ const SOURCES = [
     'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt',
     'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt',
     'https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt',
-    'https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt',
-    'https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt',
-    'https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt',
-    'https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt'
+    'https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt'
 ];
 
 async function scrapeProxies() {
-    console.log(chalk.blue('[Scraper] Fetching from sources...'));
+    console.log(chalk.blue('[Scraper] Fetching proxies...'));
     const proxies = new Set();
     
     await Promise.all(SOURCES.map(async (source) => {
@@ -34,13 +31,12 @@ async function scrapeProxies() {
                 .map(l => l.trim())
                 .filter(l => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}$/.test(l));
             lines.forEach(l => proxies.add(l));
-            console.log(chalk.gray(`  ✓ ${source.split('/')[2]}: ${lines.length}`));
         } catch (e) {
-            console.log(chalk.red(`  ✗ ${source.split('/')[2]}`));
+            // Silent fail for individual sources
         }
     }));
     
-    console.log(chalk.blue(`[Scraper] Total unique: ${proxies.size}`));
+    console.log(chalk.blue(`[Scraper] Found ${proxies.size} unique proxies`));
     return Array.from(proxies);
 }
 
@@ -75,10 +71,9 @@ async function testProxy(proxyStr, type = 'http') {
 }
 
 async function validateProxies(proxyList, concurrency = 100) {
-    console.log(chalk.yellow(`[Validator] Testing ${proxyList.length} proxies...`));
+    console.log(chalk.yellow(`[Validator] Testing ${proxyList.length} proxies (${concurrency} threads)...`));
     
     const working = [];
-    let tested = 0;
     
     for (let i = 0; i < proxyList.length; i += concurrency) {
         const batch = proxyList.slice(i, i + concurrency);
@@ -106,43 +101,26 @@ async function validateProxies(proxyList, concurrency = 100) {
             }
         });
         
-        tested += batch.length;
-        process.stdout.write(chalk.gray(`\r  Progress: ${tested}/${proxyList.length} | Working: ${working.length}`));
+        process.stdout.write(chalk.gray(`\r  Tested: ${Math.min(i + concurrency, proxyList.length)}/${proxyList.length} | Working: ${working.length}`));
     }
     
     console.log(chalk.green(`\n[Validator] ${working.length} working proxies`));
     
     working.sort((a, b) => a.latency - b.latency);
-    await fs.writeJson('/tmp/working_proxies.json', working, { spaces: 2 });
+    
+    // Ensure /tmp exists
+    await fs.ensureDir('/tmp');
+    await fs.writeJson('/tmp/working_proxies.json', working);
     
     return working;
 }
 
 async function scrapeAndValidate() {
     const proxies = await scrapeProxies();
-    const working = await validateProxies(proxies, 150);
-    
-    console.log(chalk.cyan('\n[Top 10]'));
-    working.slice(0, 10).forEach((p, i) => {
-        console.log(chalk.white(`  ${i+1}. ${p.id} (${p.latency}ms)`));
-    });
-    
-    return working;
-}
-
-async function validateExisting() {
-    try {
-        const existing = await fs.readJson('/tmp/working_proxies.json');
-        console.log(chalk.blue(`[Validator] Re-testing ${existing.length} cached proxies...`));
-        const results = await validateProxies(existing.map(p => p.id), 200);
-        return results;
-    } catch {
-        return scrapeAndValidate();
+    if (proxies.length === 0) {
+        throw new Error('No proxies scraped from any source');
     }
+    return await validateProxies(proxies, 150);
 }
 
-if (require.main === module) {
-    scrapeAndValidate();
-}
-
-module.exports = { scrapeAndValidate, validateExisting, validateProxies };
+module.exports = { scrapeAndValidate };
