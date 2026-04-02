@@ -1,16 +1,17 @@
 const axios = require('axios');
 const chalk = require('chalk');
+const config = require('./config');
 
 class CaptchaSolver {
-    constructor(apiKey) {
-        this.apiKey = apiKey;
+    constructor() {
+        this.key = config.ANTICAPTCHA_KEY;
         this.baseUrl = 'https://api.anti-captcha.com';
     }
 
     async getBalance() {
         try {
             const res = await axios.post(`${this.baseUrl}/getBalance`, {
-                clientKey: this.apiKey
+                clientKey: this.key
             });
             return res.data.balance;
         } catch {
@@ -18,67 +19,53 @@ class CaptchaSolver {
         }
     }
 
-    async solveHcaptcha(pageUrl, siteKey, proxy = null) {
+    async solve(pageUrl, siteKey, proxy = null) {
         console.log(chalk.blue('[Captcha] Creating task...'));
         
-        let taskPayload;
-        
-        if (proxy) {
-            // Solve through same proxy
-            const [ip, port] = proxy.id.split(':');
-            taskPayload = {
-                clientKey: this.apiKey,
-                task: {
-                    type: 'HCaptchaTask',
-                    websiteURL: pageUrl,
-                    websiteKey: siteKey,
-                    proxyType: proxy.type === 'socks5' ? 'socks5' : 'http',
-                    proxyAddress: ip,
-                    proxyPort: parseInt(port),
-                    proxyLogin: '',
-                    proxyPassword: '',
-                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
-                }
-            };
-        } else {
-            // Fallback to proxyless (less effective)
-            taskPayload = {
-                clientKey: this.apiKey,
-                task: {
-                    type: 'HCaptchaTaskProxyless',
-                    websiteURL: pageUrl,
-                    websiteKey: siteKey
-                }
-            };
+        const task = proxy ? {
+            type: 'HCaptchaTask',
+            websiteURL: pageUrl,
+            websiteKey: siteKey,
+            proxyType: proxy.type === 'socks5' ? 'socks5' : 'http',
+            proxyAddress: proxy.ip,
+            proxyPort: proxy.port,
+            proxyLogin: '',
+            proxyPassword: '',
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
+        } : {
+            type: 'HCaptchaTaskProxyless',
+            websiteURL: pageUrl,
+            websiteKey: siteKey
+        };
+
+        const create = await axios.post(`${this.baseUrl}/createTask`, {
+            clientKey: this.key,
+            task
+        });
+
+        if (create.data.errorId !== 0) {
+            throw new Error(create.data.errorDescription);
         }
 
-        const createRes = await axios.post(`${this.baseUrl}/createTask`, taskPayload);
+        const taskId = create.data.taskId;
         
-        if (createRes.data.errorId !== 0) {
-            throw new Error(`AntiCaptcha: ${createRes.data.errorDescription}`);
-        }
-
-        const taskId = createRes.data.taskId;
-        console.log(chalk.blue(`[Captcha] Task ID: ${taskId}`));
-        
-        // Poll for result
         for (let i = 0; i < 120; i++) {
             await new Promise(r => setTimeout(r, 5000));
             
             const result = await axios.post(`${this.baseUrl}/getTaskResult`, {
-                clientKey: this.apiKey,
-                taskId: taskId
+                clientKey: this.key,
+                taskId
             });
 
             if (result.data.status === 'ready') {
-                console.log(chalk.green('[Captcha] Solution received'));
+                console.log(chalk.green('[Captcha] Solved'));
                 return result.data.solution.gRecaptchaResponse;
             }
             
-            process.stdout.write(chalk.gray(`\r[Captcha] Waiting... ${(i+1)*5}s`));
+            process.stdout.write(chalk.gray(`\r[Captcha] ${(i+1)*5}s`));
         }
         
-        throw new Error('Captcha timeout');
+        throw new Error('Timeout');
     }
 }
 
