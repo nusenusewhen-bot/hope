@@ -290,100 +290,103 @@ class DiscordRegisterPage {
 
             console.log(chalk.yellow('[!] Captcha iframe detected, attempting to solve...'));
 
-            // Try to get the frame content - this might fail due to cross-origin [^46^][^47^]
-            let frame;
-            try {
-                frame = await iframeHandle.contentFrame();
-            } catch (e) {
-                console.log(chalk.yellow('[!] Cannot access iframe content directly (cross-origin)'));
-            }
+            // Take screenshot for debugging
+            await this.page.screenshot({ path: 'captcha_detected.png' });
+            console.log(chalk.blue('[+] Screenshot saved: captcha_detected.png'));
 
-            if (frame) {
-                console.log(chalk.blue('[+] Successfully accessed iframe content'));
+            // Try JavaScript injection method to click checkbox [^52^][^65^]
+            console.log(chalk.blue('[+] Trying JavaScript injection to click checkbox...'));
+            
+            const clicked = await this.page.evaluate(() => {
+                // Try multiple methods to find and click the checkbox
+                const iframe = document.querySelector('iframe[src*="hcaptcha"]');
+                if (!iframe) return { success: false, error: 'Iframe not found' };
                 
-                // Try to find and click the checkbox with multiple selectors
-                const checkboxSelectors = [
-                    '.checkbox',
-                    '#checkbox',
-                    '.h-captcha-checkbox',
-                    '[role="checkbox"]',
-                    '.checkbox-container',
-                    '#anchor-checkbox',
-                    'input[type="checkbox"]'
-                ];
-                
-                let clicked = false;
-                for (const selector of checkboxSelectors) {
-                    try {
-                        await frame.waitForSelector(selector, { timeout: 3000 });
-                        await frame.click(selector);
-                        console.log(chalk.green(`[+] Clicked checkbox with selector: ${selector}`));
-                        clicked = true;
-                        break;
-                    } catch (e) {
-                        continue;
-                    }
-                }
-
-                if (!clicked) {
-                    console.log(chalk.yellow('[!] Could not find checkbox with standard selectors'));
-                }
-
-                await this.delay(3000, 5000);
-
-                // Check if accessibility challenge appeared
-                const hasChallenge = await frame.$('input[name="captcha"]') !== null;
-                
-                if (hasChallenge) {
-                    console.log(chalk.yellow('[!] Accessibility challenge detected, solving...'));
-                    
-                    await frame.waitForSelector('input[name="captcha"]', { timeout: 10000 });
-
-                    for (let i = 0; i < 20; i++) {
-                        const qel = await frame.$('[id^="prompt-text"]');
-                        if (!qel) break;
-                        
-                        const q = await qel.evaluate(el => el.textContent);
-                        console.log(chalk.blue(`[Question ${i+1}] ${q}`));
-                        
-                        const a = await solver.solve(q);
-                        console.log(chalk.cyan(`[Answer] ${a}`));
-                        
-                        await frame.type('input[name="captcha"]', a);
-                        await frame.click('.button-submit');
-                        await this.delay(1500, 2500);
-                        
-                        const stillThere = await frame.$('input[name="captcha"]') !== null;
-                        if (!stillThere) {
-                            console.log(chalk.green('[+] Challenge completed!'));
-                            break;
-                        }
-                    }
-                }
-            } else {
-                // Fallback: Try using JavaScript injection to click the checkbox [^52^]
-                console.log(chalk.blue('[+] Trying JavaScript injection method...'));
+                // Method 1: Try contentDocument (may be blocked by cross-origin)
                 try {
-                    await this.page.evaluate(() => {
-                        // Try to find the checkbox inside the iframe using contentDocument
-                        const iframe = document.querySelector('iframe[src*="hcaptcha"]');
-                        if (iframe && iframe.contentDocument) {
-                            const checkbox = iframe.contentDocument.querySelector('.checkbox, #checkbox, [role="checkbox"]');
-                            if (checkbox) {
-                                checkbox.click();
-                                return true;
+                    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                    if (doc) {
+                        const selectors = [
+                            '#checkbox',
+                            '.checkbox',
+                            '.h-captcha-checkbox',
+                            '[role="checkbox"]',
+                            'input[type="checkbox"]',
+                            '.challenge-container button',
+                            'button'
+                        ];
+                        
+                        for (const selector of selectors) {
+                            const el = doc.querySelector(selector);
+                            if (el) {
+                                el.click();
+                                return { success: true, method: 'contentDocument', selector };
                             }
                         }
-                        return false;
-                    });
-                    console.log(chalk.green('[+] JavaScript injection click attempted'));
+                    }
                 } catch (e) {
-                    console.log(chalk.red(`[Error] JavaScript injection failed: ${e.message}`));
+                    // Cross-origin blocked, try other methods
                 }
+                
+                // Method 2: Use shadow DOM selector >>> [^65^]
+                // This won't work for cross-origin iframes but worth trying
+                try {
+                    const checkbox = document.querySelector('iframe[src*="hcaptcha"] >>> .checkbox');
+                    if (checkbox) {
+                        checkbox.click();
+                        return { success: true, method: 'shadow-piercing', selector: 'iframe >>> .checkbox' };
+                    }
+                } catch (e) {}
+                
+                // Method 3: Click on iframe itself (sometimes triggers checkbox)
+                try {
+                    iframe.click();
+                    return { success: true, method: 'iframe-click' };
+                } catch (e) {}
+                
+                return { success: false, error: 'All methods failed' };
+            });
+
+            if (clicked.success) {
+                console.log(chalk.green(`[+] Checkbox clicked via ${clicked.method} (${clicked.selector || 'n/a'})`));
+            } else {
+                console.log(chalk.yellow(`[!] Could not click checkbox: ${clicked.error}`));
+                console.log(chalk.yellow('[!] hCaptcha may be using advanced protection. Trying to continue anyway...'));
             }
 
-            // Wait for token to be captured
             await this.delay(5000, 8000);
+
+            // Check if accessibility challenge appeared by looking for textarea or specific elements
+            // We can't access the iframe directly, so we look for changes in the page
+            console.log(chalk.blue('[+] Checking for accessibility challenge...'));
+            
+            // Try to find any visible challenge elements
+            const challengeDetected = await this.page.evaluate(() => {
+                // Look for challenge-related elements that might be visible
+                const iframes = document.querySelectorAll('iframe');
+                for (const iframe of iframes) {
+                    const rect = iframe.getBoundingClientRect();
+                    // If iframe is larger than typical checkbox size, challenge might be showing
+                    if (rect.height > 100 && rect.width > 300) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+
+            if (challengeDetected) {
+                console.log(chalk.yellow('[!] Challenge iframe detected (large size)'));
+                console.log(chalk.yellow('[!] Cannot solve image challenge without external service'));
+            } else {
+                console.log(chalk.green('[+] No challenge detected, waiting for token...'));
+            }
+
+            // Wait longer for token to be captured
+            await this.delay(5000, 10000);
+            
+            // Take another screenshot
+            await this.page.screenshot({ path: 'captcha_after.png' });
+            
             return this.getToken();
             
         } catch (err) {
@@ -471,10 +474,10 @@ class AccountGenerator {
             if (!token) throw new Error('No token obtained');
 
             // SUCCESS - Account created!
-            console.log(chalk.green.bold(`[✓] ACCOUNT CREATED SUCCESSFULLY!`));
+            console.log(chalk.green.bold(`\n[✓✓✓] ACCOUNT CREATED SUCCESSFULLY! [✓✓✓]`));
             console.log(chalk.green(`[✓] Email: ${email.email}`));
             console.log(chalk.green(`[✓] Password: ${email.password}`));
-            console.log(chalk.green(`[✓] Token: ${token.slice(0, 30)}...`));
+            console.log(chalk.green(`[✓] Token: ${token.slice(0, 40)}...`));
 
             const verifyUrl = await this.emailProvider.getVerificationEmail(email.token);
             const verified = verifyUrl ? await page.verifyEmail(token, verifyUrl) : false;
@@ -482,7 +485,9 @@ class AccountGenerator {
             await this.save(email, token, verified);
             this.metrics.success++;
             
-            console.log(chalk.green.bold(`[✓] ${verified ? 'VERIFIED' : 'UNVERIFIED'} account saved!`));
+            console.log(chalk.green.bold(`[✓] Status: ${verified ? 'EMAIL VERIFIED' : 'UNVERIFIED'} account saved!`));
+            console.log(chalk.green.bold(`[✓✓✓] SUCCESS! [✓✓✓]\n`));
+            
             return { success: true, token, verified, email: email.email };
 
         } catch (err) {
@@ -528,7 +533,7 @@ async function main() {
         console.log(chalk.blue(`[Metrics] ${JSON.stringify(gen.getMetrics())}`));
         
         if (result.success) {
-            console.log(chalk.green.bold('\n[✓✓✓] SUCCESS! Account created and saved!'));
+            console.log(chalk.green.bold('\n[✓✓✓] COMPLETE SUCCESS! Account created and saved! [✓✓✓]'));
         }
     } catch (err) {
         console.error(chalk.red(`[Failed] ${err.message}`));
