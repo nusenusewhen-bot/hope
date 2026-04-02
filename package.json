@@ -1,16 +1,32 @@
 {
-  "name": "discord-gen-clean",
-  "version": "3.0.0",
-  "main": "index.js",
+  "name": "discord-generator-proxy-rotator",
+  "version": "2.0.0",
+  "description": "Enhanced Discord account generator with intelligent proxy rotation and health checking",
+  "main": "generator.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node generator.js",
+    "test-proxies": "node -e \"const ProxyRotator = require('./generator.js').ProxyRotator; new ProxyRotator().runHealthCheck()\"",
+    "generate": "node generator.js"
   },
   "dependencies": {
-    "puppeteer": "^21.6.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "axios": "^1.6.2",
     "chalk": "^4.1.2",
-    "zod": "^3.22.4"
-  }
+    "https-proxy-agent": "^7.0.2",
+    "proxy-agent": "^6.3.1",
+    "puppeteer": "^21.6.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "discord",
+    "generator",
+    "proxy",
+    "rotation",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT"
 }
