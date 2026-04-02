@@ -108,34 +108,53 @@ class DiscordRegisterPage {
         this.browser = browser;
         this.page = page;
         this.capturedToken = null;
-        this.apiResponse = null;
         this.setupRequestInterception();
     }
 
     setupRequestInterception() {
+        // Log ALL requests
         this.page.on('request', (request) => {
             const url = request.url();
-            if (url.includes('discord.com/api/v9/auth/register') || url.includes('discord.com/api/v9/users')) {
-                console.log(chalk.cyan(`[REQUEST] ${url}`));
-                this.captureRequest = request;
+            if (url.includes('discord.com/api')) {
+                console.log(chalk.cyan(`[REQUEST] ${request.method()} ${url}`));
+                if (url.includes('register') || url.includes('users')) {
+                    console.log(chalk.yellow(`[REGISTER REQUEST DETECTED] ${url}`));
+                    console.log(chalk.yellow(`[HEADERS]: ${JSON.stringify(request.headers()).slice(0, 200)}`));
+                }
             }
         });
 
+        // Log ALL responses
         this.page.on('response', async (response) => {
             const url = response.url();
-            if (url.includes('discord.com/api/v9/auth/register') || url.includes('discord.com/api/v9/users')) {
-                console.log(chalk.cyan(`[RESPONSE] ${url} - Status: ${response.status()}`));
+            if (url.includes('discord.com/api')) {
+                const status = response.status();
+                console.log(chalk.cyan(`[RESPONSE] ${status} ${url}`));
                 
-                try {
-                    const body = await response.json();
-                    this.apiResponse = body;
-                    
-                    if (body.token) {
-                        this.capturedToken = body.token;
-                        console.log(chalk.green.bold(`[✓✓✓] TOKEN CAPTURED FROM API! [✓✓✓]`));
+                if (url.includes('register') || url.includes('users')) {
+                    console.log(chalk.green(`[REGISTER RESPONSE] Status: ${status}`));
+                    try {
+                        const body = await response.json();
+                        console.log(chalk.green(`[BODY]: ${JSON.stringify(body).slice(0, 300)}`));
+                        if (body.token) {
+                            this.capturedToken = body.token;
+                            console.log(chalk.green.bold(`[✓✓✓] TOKEN CAPTURED! [✓✓✓]`));
+                        }
+                    } catch (e) {
+                        console.log(chalk.yellow(`[Response not JSON]`));
                     }
-                } catch (e) {}
+                }
             }
+        });
+
+        // Log console messages from page
+        this.page.on('console', (msg) => {
+            console.log(chalk.gray(`[PAGE CONSOLE] ${msg.type()}: ${msg.text().slice(0, 150)}`));
+        });
+
+        // Log page errors
+        this.page.on('pageerror', (err) => {
+            console.log(chalk.red(`[PAGE ERROR] ${err.message}`));
         });
     }
 
@@ -159,152 +178,203 @@ class DiscordRegisterPage {
     }
 
     async navigate() {
+        console.log(chalk.blue('[+] Navigating to Discord register...'));
         await this.page.goto('https://discord.com/register', { 
             waitUntil: 'networkidle0', 
             timeout: 60000 
         });
+        
+        // Log page info
+        const url = this.page.url();
+        const title = await this.page.title();
+        console.log(chalk.blue(`[+] Page loaded: ${url}`));
+        console.log(chalk.blue(`[+] Title: ${title}`));
+        
+        // Check if form exists
+        const formExists = await this.page.$('form') !== null;
+        const inputs = await this.page.$$('input');
+        console.log(chalk.blue(`[+] Form exists: ${formExists}, Inputs found: ${inputs.length}`));
+        
         await this.delay(2000, 3000);
     }
 
     async fillForm(data) {
-        console.log(chalk.blue('[+] Filling form with human-like behavior...'));
+        console.log(chalk.blue('[+] Filling form...'));
         
-        // Use more reliable selectors and human-like typing
-        const fillField = async (selector, value) => {
-            try {
-                const el = await this.page.waitForSelector(selector, { visible: true, timeout: 5000 });
-                await el.click({ clickCount: 3 });
-                await this.page.keyboard.press('Backspace');
-                
-                // Type with realistic delays
-                for (const char of value) {
-                    await this.page.keyboard.type(char, { delay: Math.random() * 100 + 50 });
-                    if (Math.random() > 0.8) await this.delay(100, 300); // occasional pause
+        // Detailed field detection
+        const fields = await this.page.evaluate(() => {
+            const inputs = Array.from(document.querySelectorAll('input'));
+            return inputs.map(i => ({
+                type: i.type,
+                name: i.name,
+                placeholder: i.placeholder,
+                id: i.id,
+                class: i.className?.slice(0, 50),
+                value: i.value?.slice(0, 20)
+            }));
+        });
+        console.log(chalk.blue(`[DETECTED FIELDS]: ${JSON.stringify(fields, null, 2)}`));
+
+        // Fill with detailed logging
+        const fillField = async (selectors, value, name) => {
+            for (const selector of selectors) {
+                try {
+                    const el = await this.page.$(selector);
+                    if (el) {
+                        console.log(chalk.blue(`[+] Found ${name} with selector: ${selector}`));
+                        await el.click({ clickCount: 3 });
+                        await this.page.keyboard.press('Backspace');
+                        
+                        for (const char of value) {
+                            await this.page.keyboard.type(char, { delay: Math.random() * 50 + 30 });
+                        }
+                        
+                        // Verify fill
+                        const filledValue = await el.evaluate(e => e.value);
+                        console.log(chalk.blue(`[+] ${name} filled: ${filledValue === value ? 'SUCCESS' : 'MISMATCH'}`));
+                        
+                        await this.delay(200, 500);
+                        return true;
+                    }
+                } catch (e) {
+                    console.log(chalk.yellow(`[Failed ${name}] ${selector}: ${e.message}`));
                 }
-                
-                await this.delay(200, 500);
-                return true;
-            } catch (e) {
-                return false;
             }
+            return false;
         };
 
-        // Try multiple selectors for each field
-        const emailFilled = await fillField('input[type="email"]', data.email) || 
-                           await fillField('input[name="email"]', data.email);
-        
-        const usernameFilled = await fillField('input[name="username"]', data.username) ||
-                              await fillField('input[placeholder*="username" i]', data.username);
-        
-        const passwordFilled = await fillField('input[type="password"]', data.password) ||
-                              await fillField('input[name="password"]', data.password);
+        const emailOk = await fillField(['input[type="email"]', 'input[name="email"]'], data.email, 'Email');
+        const usernameOk = await fillField(['input[name="username"]', 'input[placeholder*="username" i]'], data.username, 'Username');
+        const passwordOk = await fillField(['input[type="password"]', 'input[name="password"]'], data.password, 'Password');
 
-        if (!emailFilled || !usernameFilled || !passwordFilled) {
-            throw new Error('Failed to fill all fields');
+        if (!emailOk || !usernameOk || !passwordOk) {
+            throw new Error(`Field fill failed: email=${emailOk}, username=${usernameOk}, password=${passwordOk}`);
         }
 
-        // Fill DOB
+        // DOB
         await this.fillDOB(data.month, data.day, data.year);
         
-        // Check ToS
+        // ToS
         await this.page.evaluate(() => {
             document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-                if (!cb.checked) {
-                    cb.click();
-                    cb.dispatchEvent(new Event('change', { bubbles: true }));
-                }
+                if (!cb.checked) cb.click();
             });
         });
 
         await this.delay(1000, 2000);
+        
+        // Final form state
+        const finalState = await this.page.evaluate(() => {
+            return Array.from(document.querySelectorAll('input')).map(i => ({
+                name: i.name,
+                value: i.value?.slice(0, 20),
+                type: i.type
+            }));
+        });
+        console.log(chalk.blue(`[FINAL FORM STATE]: ${JSON.stringify(finalState, null, 2)}`));
+        
         console.log(chalk.green('[+] Form filled'));
     }
 
     async fillDOB(month, day, year) {
+        console.log(chalk.blue(`[+] Filling DOB: ${month}/${day}/${year}`));
+        
         try {
-            // Find all dropdowns
-            const dropdowns = await this.page.$$('div[role="button"][aria-haspopup="listbox"], div[class*="select"]');
+            const dropdowns = await this.page.$$('div[role="button"][aria-haspopup="listbox"]');
+            console.log(chalk.blue(`[+] Found ${dropdowns.length} dropdowns`));
             
             if (dropdowns.length >= 3) {
-                // Month
-                await dropdowns[0].click();
-                await this.delay(500, 800);
-                await this.page.evaluate((m) => {
-                    document.querySelectorAll('[role="option"]').forEach(opt => {
-                        if (opt.textContent.trim() === m) opt.click();
-                    });
-                }, month);
-                await this.delay(500, 800);
-
-                // Day
-                await dropdowns[1].click();
-                await this.delay(500, 800);
-                await this.page.evaluate((d) => {
-                    document.querySelectorAll('[role="option"]').forEach(opt => {
-                        if (opt.textContent.trim() === d) opt.click();
-                    });
-                }, day);
-                await this.delay(500, 800);
-
-                // Year
-                await dropdowns[2].click();
-                await this.delay(500, 800);
-                await this.page.evaluate((y) => {
-                    document.querySelectorAll('[role="option"]').forEach(opt => {
-                        if (opt.textContent.trim() === y) opt.click();
-                    });
-                }, year);
+                for (let i = 0; i < 3; i++) {
+                    const val = [month, day, year][i];
+                    console.log(chalk.blue(`[+] Setting dropdown ${i} to ${val}`));
+                    
+                    await dropdowns[i].click();
+                    await this.delay(500, 800);
+                    
+                    const clicked = await this.page.evaluate((v) => {
+                        const opts = document.querySelectorAll('[role="option"]');
+                        for (const opt of opts) {
+                            if (opt.textContent.trim() === v) {
+                                opt.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }, val);
+                    
+                    console.log(chalk.blue(`[+] Dropdown ${i} selection: ${clicked ? 'SUCCESS' : 'FAILED'}`));
+                    await this.delay(500, 800);
+                }
             }
         } catch (e) {
-            console.log(chalk.yellow(`[Warning] DOB fill: ${e.message}`));
+            console.log(chalk.yellow(`[DOB Error] ${e.message}`));
         }
     }
 
     async submitAndSolveCaptcha(solver) {
-        console.log(chalk.blue('[+] Submitting form...'));
+        console.log(chalk.blue('[+] Preparing to submit...'));
         
-        // Take screenshot before
+        // Find all buttons before submission
+        const buttonsBefore = await this.page.evaluate(() => {
+            return Array.from(document.querySelectorAll('button, div[role="button"]')).map(b => ({
+                text: b.textContent.trim(),
+                disabled: b.disabled,
+                type: b.type,
+                tag: b.tagName,
+                visible: b.offsetParent !== null
+            }));
+        });
+        console.log(chalk.blue(`[BUTTONS FOUND]: ${JSON.stringify(buttonsBefore, null, 2)}`));
+
+        // Take screenshot
         await this.page.screenshot({ path: 'before_submit.png' });
+        console.log(chalk.blue('[+] Screenshot saved: before_submit.png'));
+
+        // Attempt submission with detailed logging
+        console.log(chalk.blue('[+] Attempting to click submit button...'));
         
-        // Try multiple submission methods
-        let submitted = false;
-        
-        // Method 1: Find and click the actual submit button by text
-        submitted = await this.page.evaluate(() => {
-            const allElements = document.querySelectorAll('button, div[role="button"]');
-            for (const el of allElements) {
-                const text = el.textContent.toLowerCase().trim();
-                // Discord uses "Continue" or "Register"
-                if ((text === 'continue' || text === 'register' || text === 'sign up') && !el.disabled) {
+        const clickResult = await this.page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            console.log(`[EVAL] Found ${buttons.length} buttons`);
+            
+            for (const btn of buttons) {
+                const text = btn.textContent.trim().toLowerCase();
+                console.log(`[EVAL] Button: "${text}", disabled: ${btn.disabled}, visible: ${btn.offsetParent !== null}`);
+                
+                if ((text === 'continue' || text === 'register' || text.includes('sign up')) && !btn.disabled) {
+                    console.log(`[EVAL] Clicking button: "${text}"`);
+                    
                     // Scroll into view
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    btn.scrollIntoView({ behavior: 'instant', block: 'center' });
                     
-                    // Multiple click attempts
-                    setTimeout(() => el.click(), 100);
-                    setTimeout(() => {
-                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    }, 200);
+                    // Click multiple ways
+                    const click1 = btn.click();
+                    const click2 = btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                     
-                    return true;
+                    return { 
+                        success: true, 
+                        text: text,
+                        clicks: { native: !!click1, event: !!click2 }
+                    };
                 }
             }
-            return false;
+            return { success: false, reason: 'No suitable button found' };
         });
-
-        if (!submitted) {
-            // Method 2: Press Enter on last field
-            await this.page.keyboard.press('Tab'); // Move to button
-            await this.delay(200, 400);
-            await this.page.keyboard.press('Enter');
-        }
+        
+        console.log(chalk.blue(`[CLICK RESULT]: ${JSON.stringify(clickResult)}`));
 
         await this.delay(3000, 5000);
 
+        // Check what happened
+        const urlAfterClick = this.page.url();
+        console.log(chalk.blue(`[+] URL after click: ${urlAfterClick}`));
+
         // Check for captcha
         const hasCaptcha = await this.page.$('iframe[src*="hcaptcha"]') !== null;
-        
+        console.log(chalk.blue(`[+] Captcha present: ${hasCaptcha}`));
+
         if (hasCaptcha) {
-            console.log(chalk.yellow('[!] Captcha detected!'));
+            console.log(chalk.yellow('[!] Solving captcha...'));
             
             const siteKey = await this.page.evaluate(() => {
                 return document.querySelector('[data-sitekey]')?.getAttribute('data-sitekey') || 
@@ -313,9 +383,7 @@ class DiscordRegisterPage {
 
             const solution = await solver.solveHcaptcha('https://discord.com/register', siteKey);
             
-            // Inject solution properly
             await this.page.evaluate((token) => {
-                // Fill textarea
                 document.querySelectorAll('textarea').forEach(ta => {
                     if (ta.name.includes('h-captcha') || ta.id.includes('h-captcha')) {
                         ta.value = token;
@@ -325,77 +393,53 @@ class DiscordRegisterPage {
                         });
                     }
                 });
-                
-                // Trigger hcaptcha callback if exists
-                const hcaptchaDiv = document.querySelector('.h-captcha');
-                if (hcaptchaDiv) {
-                    const callback = hcaptchaDiv.getAttribute('data-callback');
-                    if (callback && window[callback]) {
-                        window[callback](token);
-                    }
-                }
-                
-                // Also try to find any callback in page scripts
-                for (const key in window) {
-                    if (typeof window[key] === 'function' && 
-                        (key.includes('callback') || key.includes('hcaptcha'))) {
-                        try { window[key](token); } catch(e) {}
-                    }
-                }
             }, solution);
 
             await this.delay(2000, 3000);
-
-            // Submit again after captcha
+            
+            // Click submit again
             await this.page.evaluate(() => {
                 const btn = Array.from(document.querySelectorAll('button')).find(b => 
                     b.textContent.toLowerCase().includes('continue') && !b.disabled
                 );
-                if (btn) {
-                    btn.scrollIntoView();
-                    btn.click();
-                }
+                if (btn) btn.click();
             });
         }
 
-        // Wait for API response with extended timeout
-        console.log(chalk.blue('[+] Waiting for Discord API response...'));
+        // Wait for API with detailed logging
+        console.log(chalk.blue('[+] Waiting for API response (60s max)...'));
         
-        for (let i = 0; i < 40; i++) {
+        for (let i = 0; i < 30; i++) {
             await this.delay(2000, 3000);
             
-            // Check if we got API response
+            const url = this.page.url();
+            console.log(chalk.blue(`[Check ${i+1}/30] URL: ${url}, Token: ${this.capturedToken ? 'YES' : 'NO'}`));
+            
             if (this.capturedToken) {
                 console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Token captured! [✓✓✓]`));
                 return this.capturedToken;
             }
             
-            // Check URL change
-            const url = this.page.url();
             if (url.includes('/channels') || url.includes('/app')) {
-                console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Redirected to app! [✓✓✓]`));
+                console.log(chalk.green.bold(`[✓✓✓] SUCCESS! Redirected! [✓✓✓]`));
                 return await this.getTokenFromStorage();
-            }
-            
-            // Check for errors
-            const errorText = await this.page.evaluate(() => {
-                const errors = document.querySelectorAll('[class*="error"], [class*="message"], [class*="alert"]');
-                for (const err of errors) {
-                    const text = err.textContent;
-                    if (text && text.length > 3 && !text.includes('available')) return text;
-                }
-                return null;
-            });
-            
-            if (errorText) {
-                console.log(chalk.red(`[Page Error]: ${errorText.slice(0, 150)}`));
             }
         }
 
-        // If no token but we have API response, maybe it succeeded
-        if (this.apiResponse) {
-            console.log(chalk.yellow(`[API Response]: ${JSON.stringify(this.apiResponse).slice(0, 200)}`));
-        }
+        // Final diagnostics
+        console.log(chalk.red('[DIAGNOSTICS] No API response detected'));
+        const finalButtons = await this.page.evaluate(() => {
+            return Array.from(document.querySelectorAll('button')).map(b => ({
+                text: b.textContent.trim(),
+                disabled: b.disabled
+            }));
+        });
+        console.log(chalk.red(`[Final buttons]: ${JSON.stringify(finalButtons)}`));
+        
+        const errorMsgs = await this.page.evaluate(() => {
+            return Array.from(document.querySelectorAll('[class*="error"], [class*="message"]')).map(e => e.textContent);
+        });
+        console.log(chalk.red(`[Error messages]: ${JSON.stringify(errorMsgs)}`));
 
         return null;
     }
@@ -403,8 +447,7 @@ class DiscordRegisterPage {
     async getTokenFromStorage() {
         try {
             const token = await this.page.evaluate(() => {
-                return window.localStorage?.getItem('token')?.replace(/"/g, '') ||
-                       document.cookie.match(/token=([^;]+)/)?.[1];
+                return window.localStorage?.getItem('token')?.replace(/"/g, '');
             });
             return token || 'ACCOUNT_CREATED_NO_TOKEN';
         } catch (e) {
@@ -469,21 +512,14 @@ class AccountGenerator {
             
             const token = await page.submitAndSolveCaptcha(this.captchaSolver);
             
-            if (!token) throw new Error('No token obtained');
+            if (!token) throw new Error('No token obtained - check logs above for API activity');
 
-            // SUCCESS OUTPUT
             console.log(chalk.green.bold(`\n╔════════════════════════════════════════════════════════════╗`));
             console.log(chalk.green.bold(`║       [✓✓✓] ACCOUNT CREATED SUCCESSFULLY! [✓✓✓]           ║`));
             console.log(chalk.green.bold(`╠════════════════════════════════════════════════════════════╣`));
             console.log(chalk.green(`║  Email:    ${email.email.padEnd(45)}║`));
             console.log(chalk.green(`║  Password: ${email.password.padEnd(45)}║`));
-            
-            if (token !== 'ACCOUNT_CREATED_NO_TOKEN') {
-                console.log(chalk.green(`║  Token:    ${token.slice(0, 40).padEnd(45)}║`));
-            } else {
-                console.log(chalk.yellow(`║  Token:    NOT CAPTURED                                  ║`));
-            }
-            
+            console.log(chalk.green(`║  Token:    ${token.slice(0, 40).padEnd(45)}║`));
             console.log(chalk.green.bold(`╚════════════════════════════════════════════════════════════╝\n`));
 
             let verified = false;
@@ -511,8 +547,8 @@ class AccountGenerator {
     }
 
     genUsername() {
-        const adj = ['Shadow', 'Silent', 'Dark', 'Ghost', 'Cyber', 'Neo', 'Tech'][Math.floor(Math.random() * 7)];
-        const noun = ['Hunter', 'Wraith', 'Ninja', 'Coder', 'Punk', 'Runner'][Math.floor(Math.random() * 6)];
+        const adj = ['Shadow', 'Silent', 'Dark', 'Ghost', 'Cyber', 'Neo'][Math.floor(Math.random() * 6)];
+        const noun = ['Hunter', 'Wraith', 'Ninja', 'Coder', 'Punk'][Math.floor(Math.random() * 5)];
         return `${adj}${noun}${Math.floor(Math.random() * 99999)}`;
     }
 
@@ -533,7 +569,7 @@ class AccountGenerator {
 }
 
 async function main() {
-    console.log(chalk.green.bold('[+] Starting Discord Account Generator...'));
+    console.log(chalk.green.bold('[+] Starting Discord Account Generator with FULL LOGGING...'));
     
     const gen = new AccountGenerator({
         emailProvider: new MailTmProvider(),
