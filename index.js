@@ -9,13 +9,15 @@ puppeteer.use(StealthPlugin());
 
 const ConfigSchema = z.object({
     captcha: z.object({
-        geminiKey: z.string(),
-        groqKey: z.string()
+        antiCaptchaKey: z.string(),
+        geminiKey: z.string().optional(),
+        groqKey: z.string().optional()
     })
 });
 
 const CONFIG = ConfigSchema.parse({
     captcha: {
+        antiCaptchaKey: process.env.ANTICAPTCHA_KEY || '373271de10fac6ff5aa75a2928acd339',
         geminiKey: process.env.GEMINI_KEY || '',
         groqKey: process.env.GROQ_KEY || ''
     }
@@ -133,9 +135,74 @@ class MailTmProvider {
     }
 }
 
+class AntiCaptchaSolver {
+    constructor(apiKey) {
+        this.apiKey = apiKey;
+        this.baseUrl = 'https://api.anti-captcha.com';
+        this.retry = new RetryWithBackoff(5, 2000);
+        this.circuit = new CircuitBreaker('anticaptcha', 3, 60000);
+    }
+
+    async solveHcaptcha(pageUrl, siteKey) {
+        return this.circuit.execute(() => this.retry.execute(async () => {
+            console.log(chalk.blue(`[AntiCaptcha] Creating task for ${pageUrl}`));
+            
+            // Create task
+            const createRes = await axios.post(`${this.baseUrl}/createTask`, {
+                clientKey: this.apiKey,
+                task: {
+                    type: 'HCaptchaTaskProxyless',
+                    websiteURL: pageUrl,
+                    websiteKey: siteKey
+                }
+            }, { timeout: 30000 });
+
+            if (createRes.data.errorId !== 0) {
+                throw new Error(`AntiCaptcha error: ${createRes.data.errorDescription}`);
+            }
+
+            const taskId = createRes.data.taskId;
+            console.log(chalk.blue(`[AntiCaptcha] Task created: ${taskId}`));
+
+            // Poll for result
+            return this.getTaskResult(taskId);
+        }, 'anticaptcha.solve'));
+    }
+
+    async getTaskResult(taskId, maxAttempts = 60, interval = 5000) {
+        for (let i = 0; i < maxAttempts; i++) {
+            await new Promise(r => setTimeout(r, interval));
+            
+            const result = await axios.post(`${this.baseUrl}/getTaskResult`, {
+                clientKey: this.apiKey,
+                taskId: taskId
+            }, { timeout: 30000 });
+
+            console.log(chalk.blue(`[AntiCaptcha] Polling ${i + 1}/${maxAttempts}: ${result.data.status}`));
+
+            if (result.data.status === 'ready') {
+                if (result.data.errorId !== 0) {
+                    throw new Error(`Task failed: ${result.data.errorDescription}`);
+                }
+                console.log(chalk.green(`[AntiCaptcha] Solution received!`));
+                return result.data.solution.gRecaptchaResponse;
+            }
+        }
+        throw new Error('AntiCaptcha polling timeout');
+    }
+
+    async getBalance() {
+        const res = await axios.post(`${this.baseUrl}/getBalance`, {
+            clientKey: this.apiKey
+        });
+        return res.data.balance;
+    }
+}
+
 class CaptchaSolver {
     constructor() {
         this.kb = new Map();
+        this.antiCaptcha = new AntiCaptchaSolver(CONFIG.captcha.antiCaptchaKey);
         this.circuitGemini = new CircuitBreaker('gemini', 3, 30000);
         this.circuitGroq = new CircuitBreaker('groq', 3, 30000);
     }
@@ -279,8 +346,8 @@ class DiscordRegisterPage {
             console.log(chalk.blue('[+] Checking for captcha...'));
             await this.delay(3000, 5000);
             
-            // Check if hcaptcha iframe exists
-            const iframeHandle = await this.page.$('iframe[src*="hcaptcha"]');
+            // Wait for hCaptcha iframe to appear
+            const iframeHandle = await this.page.waitForSelector('iframe[src*="hcaptcha"]', { timeout: 10000 });
             
             if (!iframeHandle) {
                 console.log(chalk.green('[+] No captcha iframe found, proceeding...'));
@@ -288,109 +355,97 @@ class DiscordRegisterPage {
                 return this.getToken();
             }
 
-            console.log(chalk.yellow('[!] Captcha iframe detected, attempting to solve...'));
+            console.log(chalk.yellow('[!] hCaptcha detected, using Anti-Captcha service...'));
 
-            // Take screenshot for debugging
-            await this.page.screenshot({ path: 'captcha_detected.png' });
-            console.log(chalk.blue('[+] Screenshot saved: captcha_detected.png'));
-
-            // Try JavaScript injection method to click checkbox [^52^][^65^]
-            console.log(chalk.blue('[+] Trying JavaScript injection to click checkbox...'));
-            
-            const clicked = await this.page.evaluate(() => {
-                // Try multiple methods to find and click the checkbox
-                const iframe = document.querySelector('iframe[src*="hcaptcha"]');
-                if (!iframe) return { success: false, error: 'Iframe not found' };
+            // Extract site key from the page
+            const siteKey = await this.page.evaluate(() => {
+                // Try to find sitekey in data attributes or scripts
+                const hcaptchaDiv = document.querySelector('[data-sitekey]');
+                if (hcaptchaDiv) return hcaptchaDiv.getAttribute('data-sitekey');
                 
-                // Method 1: Try contentDocument (may be blocked by cross-origin)
-                try {
-                    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                    if (doc) {
-                        const selectors = [
-                            '#checkbox',
-                            '.checkbox',
-                            '.h-captcha-checkbox',
-                            '[role="checkbox"]',
-                            'input[type="checkbox"]',
-                            '.challenge-container button',
-                            'button'
-                        ];
-                        
-                        for (const selector of selectors) {
-                            const el = doc.querySelector(selector);
-                            if (el) {
-                                el.click();
-                                return { success: true, method: 'contentDocument', selector };
-                            }
-                        }
-                    }
-                } catch (e) {
-                    // Cross-origin blocked, try other methods
+                // Alternative: look in scripts
+                const scripts = document.querySelectorAll('script');
+                for (const script of scripts) {
+                    const text = script.textContent || '';
+                    const match = text.match(/sitekey["']?\s*:\s*["']([a-f0-9-]+)/i);
+                    if (match) return match[1];
                 }
                 
-                // Method 2: Use shadow DOM selector >>> [^65^]
-                // This won't work for cross-origin iframes but worth trying
-                try {
-                    const checkbox = document.querySelector('iframe[src*="hcaptcha"] >>> .checkbox');
-                    if (checkbox) {
-                        checkbox.click();
-                        return { success: true, method: 'shadow-piercing', selector: 'iframe >>> .checkbox' };
-                    }
-                } catch (e) {}
-                
-                // Method 3: Click on iframe itself (sometimes triggers checkbox)
-                try {
-                    iframe.click();
-                    return { success: true, method: 'iframe-click' };
-                } catch (e) {}
-                
-                return { success: false, error: 'All methods failed' };
+                // Default Discord hCaptcha site key (may need updating)
+                return 'f5561ba9-8f1e-40ca-9b5b-a0b3f719ef34';
             });
 
-            if (clicked.success) {
-                console.log(chalk.green(`[+] Checkbox clicked via ${clicked.method} (${clicked.selector || 'n/a'})`));
-            } else {
-                console.log(chalk.yellow(`[!] Could not click checkbox: ${clicked.error}`));
-                console.log(chalk.yellow('[!] hCaptcha may be using advanced protection. Trying to continue anyway...'));
+            console.log(chalk.blue(`[+] Site key: ${siteKey}`));
+
+            // Get hCaptcha token from Anti-Captcha
+            const hcaptchaToken = await solver.antiCaptcha.solveHcaptcha('https://discord.com/register', siteKey);
+            
+            if (!hcaptchaToken) {
+                throw new Error('Failed to get hCaptcha token from Anti-Captcha');
             }
 
-            await this.delay(5000, 8000);
+            console.log(chalk.green(`[+] Got hCaptcha token: ${hcaptchaToken.slice(0, 50)}...`));
 
-            // Check if accessibility challenge appeared by looking for textarea or specific elements
-            // We can't access the iframe directly, so we look for changes in the page
-            console.log(chalk.blue('[+] Checking for accessibility challenge...'));
-            
-            // Try to find any visible challenge elements
-            const challengeDetected = await this.page.evaluate(() => {
-                // Look for challenge-related elements that might be visible
-                const iframes = document.querySelectorAll('iframe');
-                for (const iframe of iframes) {
-                    const rect = iframe.getBoundingClientRect();
-                    // If iframe is larger than typical checkbox size, challenge might be showing
-                    if (rect.height > 100 && rect.width > 300) {
-                        return true;
-                    }
+            // Inject the token into the page
+            const injected = await this.page.evaluate((token) => {
+                // Find hCaptcha response input and set value
+                const hcaptchaResponse = document.querySelector('textarea[name="h-captcha-response"]');
+                if (hcaptchaResponse) {
+                    hcaptchaResponse.value = token;
+                    hcaptchaResponse.dispatchEvent(new Event('input', { bubbles: true }));
+                    hcaptchaResponse.dispatchEvent(new Event('change', { bubbles: true }));
+                    return 'textarea';
                 }
-                return false;
-            });
+                
+                // Alternative: find by id
+                const byId = document.querySelector('textarea[id*="h-captcha-response"]');
+                if (byId) {
+                    byId.value = token;
+                    byId.dispatchEvent(new Event('input', { bubbles: true }));
+                    return 'id';
+                }
+                
+                // Try to find hcaptcha widget and trigger callback
+                if (window.hcaptcha) {
+                    try {
+                        window.hcaptcha.setResponse(token);
+                        return 'widget';
+                    } catch(e) {}
+                }
+                
+                // Create hidden input if needed
+                const input = document.createElement('textarea');
+                input.name = 'h-captcha-response';
+                input.value = token;
+                input.style.display = 'none';
+                document.body.appendChild(input);
+                return 'created';
+            }, hcaptchaToken);
 
-            if (challengeDetected) {
-                console.log(chalk.yellow('[!] Challenge iframe detected (large size)'));
-                console.log(chalk.yellow('[!] Cannot solve image challenge without external service'));
-            } else {
-                console.log(chalk.green('[+] No challenge detected, waiting for token...'));
+            console.log(chalk.green(`[+] Token injected via: ${injected}`));
+
+            // Wait for token to be captured from network
+            await this.delay(3000, 5000);
+
+            // Trigger form submission again if needed
+            try {
+                await this.page.click('button[type="submit"]');
+                await this.delay(3000, 5000);
+            } catch (e) {
+                console.log(chalk.yellow('[!] Submit button click failed, may already be processing'));
             }
 
-            // Wait longer for token to be captured
-            await this.delay(5000, 10000);
-            
-            // Take another screenshot
-            await this.page.screenshot({ path: 'captcha_after.png' });
-            
+            // Wait longer for token
+            for (let i = 0; i < 10; i++) {
+                if (this.capturedToken) break;
+                await this.delay(2000, 3000);
+            }
+
             return this.getToken();
             
         } catch (err) {
             console.log(chalk.yellow(`[Warning] Captcha handling error: ${err.message}`));
+            // Try to get token anyway in case it was captured
             return this.getToken();
         }
     }
@@ -455,6 +510,14 @@ class AccountGenerator {
         let email = null;
 
         try {
+            // Check Anti-Captcha balance first
+            const balance = await this.captchaSolver.antiCaptcha.getBalance();
+            console.log(chalk.blue(`[AntiCaptcha] Balance: $${balance}`));
+            
+            if (balance < 0.002) {
+                throw new Error('Anti-Captcha balance too low');
+            }
+
             email = await this.emailProvider.createAccount();
             page = await DiscordRegisterPage.create();
             
@@ -521,7 +584,7 @@ class AccountGenerator {
 }
 
 async function main() {
-    console.log(chalk.green.bold('[+] Starting Discord Account Generator...'));
+    console.log(chalk.green.bold('[+] Starting Discord Account Generator with Anti-Captcha...'));
     
     const gen = new AccountGenerator({
         emailProvider: new MailTmProvider(),
