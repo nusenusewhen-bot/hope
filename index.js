@@ -14,40 +14,59 @@ async function main() {
     const balance = await new CaptchaSolver().getBalance();
     console.log(chalk.blue(`Balance: $${balance}`));
     
-    // Load proxies
+    // Load or scrape proxies - AUTO-SCRAPE IF NONE
     let proxies = [];
     try {
         proxies = await fs.readJson('/tmp/working_proxies.json');
+        console.log(chalk.blue(`Loaded ${proxies.length} cached proxies`));
+        
         if (proxies.length < config.MIN_PROXIES) {
-            console.log(chalk.yellow('Insufficient proxies, rescraping...'));
-            proxies = await scrapeAndValidate();
+            console.log(chalk.yellow('Insufficient cached proxies, rescraping...'));
+            throw new Error('Need fresh proxies');
         }
     } catch {
+        console.log(chalk.yellow('No valid proxy cache found. Running scraper...'));
         proxies = await scrapeAndValidate();
     }
     
-    console.log(chalk.blue(`Proxies: ${proxies.length}`));
+    if (proxies.length === 0) {
+        console.log(chalk.red('No working proxies found after scraping'));
+        process.exit(1);
+    }
+    
+    console.log(chalk.green(`Ready with ${proxies.length} proxies`));
     
     // Generate
     const gen = new Generator();
     let count = 0;
+    let proxyIndex = 0;
     
-    for (const proxy of proxies) {
-        if (count >= config.TARGET_COUNT) break;
+    while (count < config.TARGET_COUNT && proxyIndex < proxies.length) {
+        const proxy = proxies[proxyIndex++];
         
         try {
             await gen.generate(proxy);
             count++;
             
             if (count < config.TARGET_COUNT) {
-                await new Promise(r => setTimeout(r, Math.random() * 5000 + 5000));
+                const delay = Math.random() * 5000 + 5000;
+                console.log(chalk.gray(`Waiting ${Math.round(delay)}ms...`));
+                await new Promise(r => setTimeout(r, delay));
             }
-        } catch {
+        } catch (err) {
+            console.log(chalk.yellow(`Proxy failed, trying next...`));
             continue;
         }
     }
     
     gen.printStats();
+    
+    if (count === 0) {
+        console.log(chalk.red('No accounts generated. All proxies failed.'));
+        process.exit(1);
+    }
+    
+    console.log(chalk.green(`Done! Generated ${count}/${config.TARGET_COUNT} accounts`));
     process.exit(0);
 }
 
