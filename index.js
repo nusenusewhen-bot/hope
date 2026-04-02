@@ -184,32 +184,6 @@ class CaptchaSolver {
         if (t.includes('nee')) return 'nee';
         return null;
     }
-
-    // AI Vision-based captcha solving using Gemini
-    async solveWithVision(imageBase64, question) {
-        console.log(chalk.blue('[AI Vision] Analyzing captcha image...'));
-        try {
-            const res = await axios.post(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${CONFIG.captcha.geminiKey}`,
-                {
-                    contents: [{
-                        parts: [
-                            { text: `You are solving an hCaptcha visual challenge. Look at the image and answer the question: "${question}". Provide ONLY the answer, nothing else.` },
-                            { inline_data: { mime_type: "image/png", data: imageBase64 } }
-                        ]
-                    }],
-                    generationConfig: { temperature: 0, maxOutputTokens: 50 }
-                },
-                { timeout: 15000 }
-            );
-            const answer = res.data.candidates[0].content.parts[0].text.trim();
-            console.log(chalk.green(`[AI Vision] Answer: ${answer}`));
-            return answer;
-        } catch (err) {
-            console.log(chalk.red(`[AI Vision] Error: ${err.message}`));
-            return null;
-        }
-    }
 }
 
 class DiscordRegisterPage {
@@ -221,7 +195,6 @@ class DiscordRegisterPage {
     }
 
     setupRequestInterception() {
-        // Listen for responses to capture Authorization header
         this.page.on('response', async (response) => {
             const request = response.request();
             const headers = request.headers();
@@ -304,91 +277,109 @@ class DiscordRegisterPage {
     async solveCaptcha(solver) {
         try {
             console.log(chalk.blue('[+] Checking for captcha...'));
-            
-            // Wait for captcha iframe to appear
             await this.delay(3000, 5000);
             
             // Check if hcaptcha iframe exists
             const iframeHandle = await this.page.$('iframe[src*="hcaptcha"]');
             
             if (!iframeHandle) {
-                console.log(chalk.green('[+] No captcha detected, proceeding...'));
+                console.log(chalk.green('[+] No captcha iframe found, proceeding...'));
                 await this.delay(3000, 5000);
                 return this.getToken();
             }
 
-            console.log(chalk.yellow('[!] Captcha detected, analyzing...'));
+            console.log(chalk.yellow('[!] Captcha iframe detected, attempting to solve...'));
 
-            // Get the iframe element properly [^44^]
-            const frame = await iframeHandle.contentFrame();
-            if (!frame) {
-                console.log(chalk.red('[Error] Could not access captcha iframe content'));
-                return this.getToken();
+            // Try to get the frame content - this might fail due to cross-origin [^46^][^47^]
+            let frame;
+            try {
+                frame = await iframeHandle.contentFrame();
+            } catch (e) {
+                console.log(chalk.yellow('[!] Cannot access iframe content directly (cross-origin)'));
             }
 
-            // Wait for the checkbox to be available and click it
-            try {
-                // hCaptcha checkbox selector - wait for it
-                await frame.waitForSelector('.checkbox', { timeout: 10000 });
-                console.log(chalk.blue('[+] Clicking captcha checkbox...'));
-                await frame.click('.checkbox');
-            } catch (e) {
-                console.log(chalk.yellow('[!] Standard checkbox not found, trying alternative...'));
-                // Try alternative selectors
+            if (frame) {
+                console.log(chalk.blue('[+] Successfully accessed iframe content'));
+                
+                // Try to find and click the checkbox with multiple selectors
                 const checkboxSelectors = [
+                    '.checkbox',
                     '#checkbox',
                     '.h-captcha-checkbox',
                     '[role="checkbox"]',
                     '.checkbox-container',
-                    '#anchor-checkbox'
+                    '#anchor-checkbox',
+                    'input[type="checkbox"]'
                 ];
                 
+                let clicked = false;
                 for (const selector of checkboxSelectors) {
                     try {
                         await frame.waitForSelector(selector, { timeout: 3000 });
                         await frame.click(selector);
                         console.log(chalk.green(`[+] Clicked checkbox with selector: ${selector}`));
+                        clicked = true;
                         break;
                     } catch (e) {
                         continue;
                     }
                 }
-            }
 
-            await this.delay(3000, 5000);
+                if (!clicked) {
+                    console.log(chalk.yellow('[!] Could not find checkbox with standard selectors'));
+                }
 
-            // Check if challenge appeared (accessibility challenge)
-            const hasChallenge = await frame.$('input[name="captcha"]') !== null;
-            
-            if (hasChallenge) {
-                console.log(chalk.yellow('[!] Accessibility challenge detected, solving with AI...'));
+                await this.delay(3000, 5000);
+
+                // Check if accessibility challenge appeared
+                const hasChallenge = await frame.$('input[name="captcha"]') !== null;
                 
-                // Try to solve accessibility challenge
-                await frame.waitForSelector('input[name="captcha"]', { timeout: 10000 });
+                if (hasChallenge) {
+                    console.log(chalk.yellow('[!] Accessibility challenge detected, solving...'));
+                    
+                    await frame.waitForSelector('input[name="captcha"]', { timeout: 10000 });
 
-                for (let i = 0; i < 20; i++) {
-                    const qel = await frame.$('[id^="prompt-text"]');
-                    if (!qel) break;
-                    
-                    const q = await qel.evaluate(el => el.textContent);
-                    console.log(chalk.blue(`[Question ${i+1}] ${q}`));
-                    
-                    const a = await solver.solve(q);
-                    console.log(chalk.cyan(`[Answer] ${a}`));
-                    
-                    await frame.type('input[name="captcha"]', a);
-                    await frame.click('.button-submit');
-                    await this.delay(1500, 2500);
-                    
-                    // Check if challenge is complete
-                    const stillThere = await frame.$('input[name="captcha"]') !== null;
-                    if (!stillThere) {
-                        console.log(chalk.green('[+] Challenge completed!'));
-                        break;
+                    for (let i = 0; i < 20; i++) {
+                        const qel = await frame.$('[id^="prompt-text"]');
+                        if (!qel) break;
+                        
+                        const q = await qel.evaluate(el => el.textContent);
+                        console.log(chalk.blue(`[Question ${i+1}] ${q}`));
+                        
+                        const a = await solver.solve(q);
+                        console.log(chalk.cyan(`[Answer] ${a}`));
+                        
+                        await frame.type('input[name="captcha"]', a);
+                        await frame.click('.button-submit');
+                        await this.delay(1500, 2500);
+                        
+                        const stillThere = await frame.$('input[name="captcha"]') !== null;
+                        if (!stillThere) {
+                            console.log(chalk.green('[+] Challenge completed!'));
+                            break;
+                        }
                     }
                 }
             } else {
-                console.log(chalk.green('[+] Checkbox clicked, no challenge appeared'));
+                // Fallback: Try using JavaScript injection to click the checkbox [^52^]
+                console.log(chalk.blue('[+] Trying JavaScript injection method...'));
+                try {
+                    await this.page.evaluate(() => {
+                        // Try to find the checkbox inside the iframe using contentDocument
+                        const iframe = document.querySelector('iframe[src*="hcaptcha"]');
+                        if (iframe && iframe.contentDocument) {
+                            const checkbox = iframe.contentDocument.querySelector('.checkbox, #checkbox, [role="checkbox"]');
+                            if (checkbox) {
+                                checkbox.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    });
+                    console.log(chalk.green('[+] JavaScript injection click attempted'));
+                } catch (e) {
+                    console.log(chalk.red(`[Error] JavaScript injection failed: ${e.message}`));
+                }
             }
 
             // Wait for token to be captured
@@ -402,7 +393,6 @@ class DiscordRegisterPage {
     }
 
     async getToken() {
-        // First try: use captured token from network interception
         if (this.capturedToken) {
             console.log(chalk.green(`[+] Using network-captured token`));
             return this.capturedToken;
@@ -480,14 +470,20 @@ class AccountGenerator {
             
             if (!token) throw new Error('No token obtained');
 
+            // SUCCESS - Account created!
+            console.log(chalk.green.bold(`[✓] ACCOUNT CREATED SUCCESSFULLY!`));
+            console.log(chalk.green(`[✓] Email: ${email.email}`));
+            console.log(chalk.green(`[✓] Password: ${email.password}`));
+            console.log(chalk.green(`[✓] Token: ${token.slice(0, 30)}...`));
+
             const verifyUrl = await this.emailProvider.getVerificationEmail(email.token);
             const verified = verifyUrl ? await page.verifyEmail(token, verifyUrl) : false;
 
             await this.save(email, token, verified);
             this.metrics.success++;
             
-            console.log(chalk.green(`[+] ${verified ? 'Verified' : 'Unverified'}: ${token.slice(0, 20)}...`));
-            return { success: true, token, verified };
+            console.log(chalk.green.bold(`[✓] ${verified ? 'VERIFIED' : 'UNVERIFIED'} account saved!`));
+            return { success: true, token, verified, email: email.email };
 
         } catch (err) {
             this.metrics.fail++;
@@ -511,6 +507,7 @@ class AccountGenerator {
     async save(data, token, verified) {
         const line = `${data.email}:${data.password}:${token}\n`;
         await fs.appendFile(verified ? 'verified.txt' : 'unverified.txt', line);
+        console.log(chalk.blue(`[+] Account saved to ${verified ? 'verified.txt' : 'unverified.txt'}`));
     }
 
     getMetrics() {
@@ -519,20 +516,33 @@ class AccountGenerator {
 }
 
 async function main() {
-    console.log(chalk.green('[+] Starting...'));
+    console.log(chalk.green.bold('[+] Starting Discord Account Generator...'));
     
     const gen = new AccountGenerator({
         emailProvider: new MailTmProvider(),
         captchaSolver: new CaptchaSolver()
     });
 
-    await gen.generate();
-    console.log(chalk.blue(`[Metrics] ${JSON.stringify(gen.getMetrics())}`));
+    try {
+        const result = await gen.generate();
+        console.log(chalk.blue(`[Metrics] ${JSON.stringify(gen.getMetrics())}`));
+        
+        if (result.success) {
+            console.log(chalk.green.bold('\n[✓✓✓] SUCCESS! Account created and saved!'));
+        }
+    } catch (err) {
+        console.error(chalk.red(`[Failed] ${err.message}`));
+        console.log(chalk.blue(`[Metrics] ${JSON.stringify(gen.getMetrics())}`));
+    }
+    
     console.log(chalk.green('[+] Done'));
     process.exit(0);
 }
 
-main().catch(err => {
-    console.error(chalk.red(err));
-    process.exit(1);
-});
+// Prevent multiple runs
+if (require.main === module) {
+    main().catch(err => {
+        console.error(chalk.red(err));
+        process.exit(1);
+    });
+}
