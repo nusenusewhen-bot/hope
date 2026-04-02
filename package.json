@@ -1,32 +1,24 @@
 {
-  "name": "discord-generator-proxy-rotator",
-  "version": "2.0.0",
-  "description": "Enhanced Discord account generator with intelligent proxy rotation and health checking",
-  "main": "generator.js",
+  "name": "discord-generator-railway",
+  "version": "3.1.0",
+  "description": "Discord account generator for Railway deployment",
+  "main": "index.js",
   "scripts": {
-    "start": "node generator.js",
-    "test-proxies": "node -e \"const ProxyRotator = require('./generator.js').ProxyRotator; new ProxyRotator().runHealthCheck()\"",
-    "generate": "node generator.js"
+    "start": "node index.js",
+    "scrape": "node scraper.js",
+    "validate": "node -e \"const { validateExisting } = require('./scraper.js'); validateExisting()\""
   },
   "dependencies": {
     "axios": "^1.6.2",
-    "chalk": "^4.1.2",
+    "cheerio": "^1.0.0-rc.12",
+    "playwright": "^1.40.1",
+    "playwright-firefox": "^1.40.1",
     "https-proxy-agent": "^7.0.2",
-    "proxy-agent": "^6.3.1",
-    "puppeteer": "^21.6.1",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "socks-proxy-agent": "^8.0.2",
+    "chalk": "^4.1.2",
+    "fs-extra": "^11.2.0"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "keywords": [
-    "discord",
-    "generator",
-    "proxy",
-    "rotation",
-    "automation"
-  ],
-  "author": "",
-  "license": "MIT"
+  }
 }
