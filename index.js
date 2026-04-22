@@ -78,8 +78,7 @@ async function solveCaptchaWithNopeCHA(siteKey, pageUrl, proxy = null) {
     }
 }
 
-// Native HTTPS request instead of tls-client
-function makeDiscordRequest(email, password, proxy = null) {
+function makeDiscordRequest(email, password) {
     return new Promise((resolve, reject) => {
         const postData = JSON.stringify({
             gift_code_sku_id: null,
@@ -132,9 +131,9 @@ function makeDiscordRequest(email, password, proxy = null) {
     });
 }
 
-async function fetchDiscordToken(email, password, proxy = null) {
+async function fetchDiscordToken(email, password) {
     try {
-        const result = await makeDiscordRequest(email, password, proxy);
+        const result = await makeDiscordRequest(email, password);
         if (result.status !== 200) {
             console.log(`[TOKEN] Login failed: HTTP ${result.status}`);
             return null;
@@ -312,7 +311,7 @@ async function generateAccount() {
                 if (token) token = token.replace(/^"|"$/g, '');
                 
                 if (!token) {
-                    token = await fetchDiscordToken(email, password, proxy);
+                    token = await fetchDiscordToken(email, password);
                 }
                 break;
             }
