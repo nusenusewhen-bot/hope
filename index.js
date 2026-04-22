@@ -11,35 +11,49 @@ const spamState = new Map();
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
-// WORKING LOGIN: Uses axios REST validation like your example, then spawns client
 app.post('/login', async (req, res) => {
     const { token, slot } = req.body;
-    if (!token || slot === undefined) return res.json({ error: 'Missing fields' });
+    console.log(`\n[LOGIN][Slot ${slot}] Login attempt started`);
+    
+    if (!token || slot === undefined) {
+        console.log(`[LOGIN][Slot ${slot}] Missing fields`);
+        return res.json({ error: 'Missing fields' });
+    }
+
+    console.log(`[LOGIN][Slot ${slot}] Token received (length: ${token.length})`);
 
     // Kill existing
     const existing = bots.get(slot);
     if (existing) {
-        try { existing.destroy(); } catch(e) {}
+        console.log(`[LOGIN][Slot ${slot}] Destroying existing client`);
+        try { existing.destroy(); } catch(e) { console.log(`[LOGIN][Slot ${slot}] Destroy error:`, e.message); }
         bots.delete(slot);
         spamState.delete(slot);
     }
 
-    // Step 1: Validate token via REST API (proven working method from your code)
+    // Step 1: REST API validation
+    console.log(`[LOGIN][Slot ${slot}] Step 1: Validating token via Discord REST API...`);
     let userData;
     try {
         const validateRes = await axios.get('https://discord.com/api/v10/users/@me', {
             headers: { Authorization: token },
-            timeout: 8000
+            timeout: 10000
         });
         userData = validateRes.data;
+        console.log(`[LOGIN][Slot ${slot}] REST API success: ${userData.username}#${userData.discriminator || '0'} (ID: ${userData.id})`);
     } catch (e) {
+        console.log(`[LOGIN][Slot ${slot}] REST API FAILED:`);
+        console.log(`  Status: ${e.response?.status || 'no response'}`);
+        console.log(`  Message: ${e.message}`);
+        console.log(`  Response data:`, e.response?.data || 'none');
         return res.json({ 
             status: 'invalid', 
-            error: e.response?.status === 401 ? 'Invalid token' : 'Discord API error: ' + (e.response?.data?.message || e.message)
+            error: e.response?.status === 401 ? 'Invalid token (401 from Discord)' : `REST error: ${e.message}`
         });
     }
 
-    // Step 2: Spawn selfbot client with validated token
+    // Step 2: Spawn selfbot client
+    console.log(`[LOGIN][Slot ${slot}] Step 2: Creating discord.js-selfbot-v13 client...`);
     const client = new Client({
         checkUpdate: false,
         intents: [
@@ -52,38 +66,62 @@ app.post('/login', async (req, res) => {
         partials: [Partials.Channel, Partials.GuildMember, Partials.Message]
     });
 
-    const loginTimeout = setTimeout(() => {
+    let responded = false;
+
+    const sendResponse = (data) => {
+        if (!responded) {
+            responded = true;
+            res.json(data);
+        }
+    };
+
+    const timeout = setTimeout(() => {
+        console.log(`[LOGIN][Slot ${slot}] TIMEOUT: Client never became ready after 25s`);
         try { client.destroy(); } catch(e) {}
-        bots.delete(slot);
-        spamState.delete(slot);
-    }, 30000);
+        sendResponse({ status: 'invalid', error: 'Timeout: Client never connected to Discord gateway' });
+    }, 25000);
 
     client.once('ready', () => {
-        clearTimeout(loginTimeout);
+        clearTimeout(timeout);
+        console.log(`[LOGIN][Slot ${slot}] SUCCESS: Client ready as ${client.user.tag}`);
         bots.set(slot, client);
         spamState.set(slot, { active: false, channels: [], message: '' });
-        
-        res.json({
+        sendResponse({
             status: 'valid',
             user: client.user.tag,
-            id: client.user.id,
-            username: userData.username,
-            global_name: userData.global_name
+            id: client.user.id
         });
     });
 
     client.once('error', (err) => {
-        clearTimeout(loginTimeout);
+        clearTimeout(timeout);
+        console.log(`[LOGIN][Slot ${slot}] CLIENT ERROR:`, err.message);
+        console.log(`[LOGIN][Slot ${slot}] Error stack:`, err.stack);
         try { client.destroy(); } catch(e) {}
-        res.json({ status: 'invalid', error: 'Client error: ' + err.message });
+        sendResponse({ status: 'invalid', error: 'Client error: ' + err.message });
     });
 
+    client.on('shardError', (err) => {
+        console.log(`[LOGIN][Slot ${slot}] SHARD ERROR:`, err.message);
+    });
+
+    client.on('disconnect', () => {
+        console.log(`[LOGIN][Slot ${slot}] CLIENT DISCONNECTED`);
+    });
+
+    // Step 3: Login
+    console.log(`[LOGIN][Slot ${slot}] Step 3: Calling client.login()...`);
     try {
         await client.login(token);
+        console.log(`[LOGIN][Slot ${slot}] client.login() returned successfully`);
     } catch (err) {
-        clearTimeout(loginTimeout);
+        clearTimeout(timeout);
+        console.log(`[LOGIN][Slot ${slot}] client.login() THREW ERROR:`);
+        console.log(`  Message: ${err.message}`);
+        console.log(`  Code: ${err.code || 'none'}`);
+        console.log(`  Stack:`, err.stack);
         try { client.destroy(); } catch(e) {}
-        res.json({ status: 'invalid', error: 'Login failed: ' + err.message });
+        sendResponse({ status: 'invalid', error: 'Login exception: ' + err.message });
     }
 });
 
@@ -93,10 +131,9 @@ app.post('/configure', (req, res) => {
     if (!state) return res.json({ error: 'Not logged in' });
     state.channels = channels || [];
     state.message = message || '';
-    res.json({ status: 'Configured', channels: state.channels.length });
+    res.json({ status: 'Configured' });
 });
 
-// FIXED SPAM: Proper working loop with random member pings
 app.post('/spam/start', (req, res) => {
     const { slot } = req.body;
     const client = bots.get(slot);
@@ -107,7 +144,6 @@ app.post('/spam/start', (req, res) => {
     state.active = true;
     res.json({ status: 'Spam started' });
 
-    // Background spam loop
     (async () => {
         while (spamState.get(slot)?.active) {
             const current = spamState.get(slot);
@@ -124,40 +160,27 @@ app.post('/spam/start', (req, res) => {
                     if (!channel?.isTextBased()) continue;
 
                     const guild = channel.guild;
-                    
-                    // Fetch all members including offline
-                    try {
-                        await guild.members.fetch({ time: 10000 }).catch(() => {});
-                    } catch (e) {}
+                    try { await guild.members.fetch({ time: 10000 }).catch(() => {}); } catch (e) {}
 
-                    // Get non-bot members
                     const members = guild.members.cache.filter(m => !m.user.bot);
                     const memberArray = Array.from(members.values());
-                    
-                    if (!memberArray.length) {
-                        console.log(`[Slot ${slot}] No members in ${guild.name}`);
-                        continue;
-                    }
+                    if (!memberArray.length) continue;
 
-                    // Random 3-5 targets
                     const count = Math.min(Math.floor(Math.random() * 3) + 3, memberArray.length);
                     const targets = memberArray.sort(() => 0.5 - Math.random()).slice(0, count);
                     const mentions = targets.map(m => `<@${m.id}>`).join(' ');
                     const fullMsg = `${mentions} ${current.message}`.trim();
 
                     await channel.send(fullMsg);
-                    console.log(`[Slot ${slot}] Pinged ${count} users in #${channel.name}`);
-
-                    // Random delay 1.5-3s
+                    console.log(`[SPAM][Slot ${slot}] Pinged ${count} in #${channel.name}`);
                     await new Promise(r => setTimeout(r, 1500 + Math.random() * 1500));
 
                 } catch (e) {
-                    console.log(`[Slot ${slot}] Error: ${e.message}`);
+                    console.log(`[SPAM][Slot ${slot}] Error: ${e.message}`);
                     await new Promise(r => setTimeout(r, 3000));
                 }
             }
         }
-        console.log(`[Slot ${slot}] Spam loop ended`);
     })();
 });
 
@@ -175,11 +198,9 @@ app.post('/leave', async (req, res) => {
 
     try {
         const guild = await client.guilds.fetch(guildId).catch(() => null);
-        if (!guild) return res.json({ error: 'Guild not found or no access' });
-        
-        const name = guild.name;
+        if (!guild) return res.json({ error: 'Guild not found' });
         await guild.leave();
-        res.json({ status: `Left ${name}`, guildId });
+        res.json({ status: `Left ${guild.name}` });
     } catch (e) {
         res.json({ error: e.message });
     }
