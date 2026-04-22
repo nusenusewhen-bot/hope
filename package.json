@@ -1,6 +1,6 @@
 {
   "name": "selfbot-panel",
-  "version": "5.0.0",
+  "version": "7.0.0",
   "main": "index.js",
   "engines": { "node": ">=18.0.0" },
   "dependencies": {
