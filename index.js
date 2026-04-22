@@ -1,8 +1,8 @@
 const express = require('express');
 const axios = require('axios');
+const https = require('https');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const tlsClient = require('tls-client');
 const fs = require('fs');
 const path = require('path');
 
@@ -78,48 +78,68 @@ async function solveCaptchaWithNopeCHA(siteKey, pageUrl, proxy = null) {
     }
 }
 
+// Native HTTPS request instead of tls-client
+function makeDiscordRequest(email, password, proxy = null) {
+    return new Promise((resolve, reject) => {
+        const postData = JSON.stringify({
+            gift_code_sku_id: null,
+            login: email,
+            login_source: null,
+            password: password,
+            undelete: false
+        });
+
+        const options = {
+            hostname: 'discord.com',
+            port: 443,
+            path: '/api/v9/auth/login',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Origin': 'https://discord.com',
+                'Referer': 'https://discord.com/channels/@me',
+                'Sec-Ch-Ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'X-Discord-Timezone': 'Asia/Calcutta',
+                'X-Super-Properties': 'eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiaGFzX2NsaWVudF9tb2RzIjpmYWxzZSwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEzNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTM0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjM4NDg4NywiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0='
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(data);
+                    resolve({ status: res.statusCode, data: parsed });
+                } catch (e) {
+                    resolve({ status: res.statusCode, data: null, raw: data });
+                }
+            });
+        });
+
+        req.on('error', reject);
+        req.write(postData);
+        req.end();
+    });
+}
+
 async function fetchDiscordToken(email, password, proxy = null) {
     try {
-        const session = new tlsClient.Session({
-            clientIdentifier: 'chrome_131',
-            randomTlsExtensionOrder: true,
-            ...(proxy && { proxy: proxy.startsWith('http') ? proxy : `http://${proxy}` })
-        });
-
-        const response = await session.post('https://discord.com/api/v9/auth/login', {
-            headers: {
-                'accept': '*/*',
-                'accept-language': 'en-US,en;q=0.9',
-                'content-type': 'application/json',
-                'origin': 'https://discord.com',
-                'referer': 'https://discord.com/channels/@me',
-                'sec-ch-ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-origin',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-                'x-discord-timezone': 'Asia/Calcutta',
-                'x-super-properties': 'eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiaGFzX2NsaWVudF9tb2RzIjpmYWxzZSwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEzNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTM0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjM4NDg4NywiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0='
-            },
-            body: JSON.stringify({
-                gift_code_sku_id: null,
-                login: email,
-                login_source: null,
-                password: password,
-                undelete: false
-            }),
-            timeout: 15000
-        });
-
-        if (response.status !== 200) {
-            console.log(`[TOKEN] Login failed: HTTP ${response.status}`);
+        const result = await makeDiscordRequest(email, password, proxy);
+        if (result.status !== 200) {
+            console.log(`[TOKEN] Login failed: HTTP ${result.status}`);
             return null;
         }
-
-        const data = JSON.parse(response.body);
-        return data.token || null;
+        return result.data?.token || null;
     } catch (e) {
         console.log('[TOKEN] Error:', e.message);
         return null;
@@ -146,28 +166,29 @@ function generateEmail() {
 }
 
 async function checkToken(token) {
-    try {
-        const session = new tlsClient.Session({
-            clientIdentifier: 'chrome_138',
-            randomTlsExtensionOrder: true
-        });
-
-        const response = await session.get('https://discordapp.com/api/v9/users/@me/library', {
+    return new Promise((resolve) => {
+        const options = {
+            hostname: 'discordapp.com',
+            port: 443,
+            path: '/api/v9/users/@me/library',
+            method: 'GET',
             headers: {
                 'Authorization': token,
                 'Content-Type': 'application/json',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
-            },
-            timeout: 10000
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            if (res.statusCode === 200) resolve('VALID');
+            else if (res.statusCode === 403) resolve('LOCKED');
+            else if (res.statusCode === 401) resolve('INVALID');
+            else resolve('ERROR');
         });
 
-        if (response.status === 200) return 'VALID';
-        if (response.status === 403) return 'LOCKED';
-        if (response.status === 401) return 'INVALID';
-        return 'ERROR';
-    } catch (e) {
-        return 'ERROR';
-    }
+        req.on('error', () => resolve('ERROR'));
+        req.end();
+    });
 }
 
 function saveAccount(email, password, token, status) {
@@ -200,7 +221,6 @@ async function generateAccount() {
 
     let browser;
     try {
-        const extensionPath = path.join(__dirname, 'nopecha_ext');
         const args = [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -208,18 +228,15 @@ async function generateAccount() {
             '--disable-accelerated-2d-canvas',
             '--disable-gpu',
             '--window-size=1280,720',
-            '--disable-blink-features=AutomationControlled',
-            ...(fs.existsSync(extensionPath) ? [
-                `--load-extension=${extensionPath}`,
-                `--disable-extensions-except=${extensionPath}`
-            ] : []),
-            ...(proxy ? [`--proxy-server=${proxy}`] : [])
+            '--disable-blink-features=AutomationControlled'
         ];
+
+        const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
 
         browser = await puppeteer.launch({
             headless: true,
             args,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
+            executablePath: fs.existsSync(executablePath) ? executablePath : undefined
         });
 
         const page = await browser.newPage();
@@ -272,8 +289,10 @@ async function generateAccount() {
                 const solution = await solveCaptchaWithNopeCHA(siteKey, page.url(), proxy);
                 if (solution) {
                     await page.evaluate((sol) => {
-                        document.querySelector('textarea[name="h-captcha-response"]').value = sol;
-                        document.querySelector('#hcap-script').dispatchEvent(new Event('submit'));
+                        const textarea = document.querySelector('textarea[name="h-captcha-response"]');
+                        if (textarea) textarea.value = sol;
+                        const script = document.querySelector('#hcap-script');
+                        if (script) script.dispatchEvent(new Event('submit'));
                     }, solution);
                     await page.waitForTimeout(3000);
                 }
