@@ -203,6 +203,19 @@ function saveAccount(email, password, token, status) {
     }
 }
 
+// Find downloaded Chrome binary
+function findChrome() {
+    const cacheDir = path.join(__dirname, '.cache', 'puppeteer');
+    if (!fs.existsSync(cacheDir)) return null;
+    
+    const entries = fs.readdirSync(cacheDir);
+    for (const entry of entries) {
+        const chromePath = path.join(cacheDir, entry, 'chrome-linux', 'chrome');
+        if (fs.existsSync(chromePath)) return chromePath;
+    }
+    return null;
+}
+
 async function generateAccount() {
     console.log('\n[GEN] Starting account generation...');
     
@@ -230,12 +243,18 @@ async function generateAccount() {
             '--disable-blink-features=AutomationControlled'
         ];
 
-        const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
+        // Find downloaded Chrome or use system fallback
+        let executablePath = findChrome();
+        if (!executablePath && process.env.PUPPETEER_EXECUTABLE_PATH) {
+            executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+        }
+        
+        console.log(`[GEN] Chrome path: ${executablePath || 'default'}`);
 
         browser = await puppeteer.launch({
-            headless: true,
+            headless: "new",
             args,
-            executablePath: fs.existsSync(executablePath) ? executablePath : undefined
+            executablePath: executablePath || undefined
         });
 
         const page = await browser.newPage();
