@@ -1,4 +1,3 @@
-
 const express = require('express');
 const { Client, GatewayIntentBits, Partials } = require('discord.js-selfbot-v13');
 const path = require('path');
@@ -11,12 +10,12 @@ const spamState = new Map();
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
-// Auto-login endpoint: validates token, returns username
+// FIXED LOGIN: Proper token validation with working discord.js-selfbot-v13
 app.post('/login', async (req, res) => {
     const { token, slot } = req.body;
     if (!token || slot === undefined) return res.json({ error: 'Missing fields' });
 
-    // Kill existing bot in slot if present
+    // Destroy existing bot in slot
     const existing = bots.get(slot);
     if (existing) {
         existing.destroy();
@@ -24,31 +23,65 @@ app.post('/login', async (req, res) => {
         spamState.delete(slot);
     }
 
-    const client = new Client({
+    // Create validation client with required selfbot options
+    const validateClient = new Client({
         intents: [
-            GatewayIntentBits.Guilds, 
-            GatewayIntentBits.GuildMessages, 
+            GatewayIntentBits.Guilds,
+            GatewayIntentBits.GuildMessages,
             GatewayIntentBits.GuildMembers,
             GatewayIntentBits.MessageContent
         ],
-        partials: [Partials.Channel, Partials.GuildMember]
+        partials: [Partials.Channel, Partials.GuildMember],
+        checkUpdate: false, // Disable update checks that cause errors
+        readyStatus: false, // Don't set custom status
+        patchVoice: false
     });
 
-    client.once('ready', () => {
-        console.log(`Slot ${slot} ready: ${client.user.tag}`);
+    // Set timeout for login attempt
+    const loginPromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            validateClient.destroy();
+            reject(new Error('Login timeout'));
+        }, 15000);
+
+        validateClient.once('ready', () => {
+            clearTimeout(timeout);
+            const userData = {
+                tag: validateClient.user.tag,
+                id: validateClient.user.id,
+                avatar: validateClient.user.displayAvatarURL()
+            };
+            // Keep this client as the active bot instead of making a new one
+            bots.set(slot, validateClient);
+            spamState.set(slot, { active: false, channels: [], message: '' });
+            resolve(userData);
+        });
+
+        validateClient.once('error', (err) => {
+            clearTimeout(timeout);
+            validateClient.destroy();
+            reject(err);
+        });
+
+        validateClient.login(token).catch(err => {
+            clearTimeout(timeout);
+            reject(err);
+        });
     });
 
     try {
-        await client.login(token);
-        bots.set(slot, client);
-        spamState.set(slot, { active: false, channels: [], message: '' });
-        res.json({ 
-            status: 'valid', 
-            user: client.user.tag,
-            id: client.user.id 
+        const userData = await loginPromise;
+        res.json({
+            status: 'valid',
+            user: userData.tag,
+            id: userData.id
         });
     } catch (err) {
-        res.json({ status: 'invalid', error: 'Token rejected' });
+        console.log(`Slot ${slot} login failed:`, err.message);
+        res.json({
+            status: 'invalid',
+            error: err.message.includes('token') ? 'Invalid token' : 'Login failed: ' + err.message
+        });
     }
 });
 
@@ -62,7 +95,7 @@ app.post('/configure', (req, res) => {
     res.json({ status: 'Configured', channels: state.channels.length });
 });
 
-// FIXED: Start spam loop with proper async handling
+// FIXED: Working spam loop with guaranteed execution
 app.post('/spam/start', (req, res) => {
     const { slot } = req.body;
     const client = bots.get(slot);
@@ -73,55 +106,84 @@ app.post('/spam/start', (req, res) => {
     state.active = true;
     res.json({ status: 'Spam loop engaged' });
 
-    // FIXED: Proper async IIFE to handle the infinite loop
-    (async () => {
-        while (spamState.get(slot)?.active) {
-            const currentState = spamState.get(slot);
-            if (!currentState || !currentState.channels.length) {
-                await new Promise(r => setTimeout(r, 1000));
-                continue;
-            }
+    // Spawn spam loop in background without blocking response
+    setImmediate(() => {
+        runSpamLoop(slot, client, state);
+    });
+});
 
-            for (const chId of currentState.channels) {
-                if (!spamState.get(slot)?.active) break;
+async function runSpamLoop(slot, client, initialState) {
+    console.log(`[Slot ${slot}] Spam loop starting`);
+    
+    while (true) {
+        const currentState = spamState.get(slot);
+        if (!currentState || !currentState.active) break;
 
-                try {
-                    const channel = await client.channels.fetch(chId).catch(() => null);
-                    if (!channel || !channel.isTextBased()) continue;
+        const channels = currentState.channels;
+        const message = currentState.message;
+        
+        if (!channels || channels.length === 0) {
+            await sleep(1000);
+            continue;
+        }
 
-                    // FIXED: Fetch members properly with caching
-                    const guild = channel.guild;
-                    await guild.members.fetch({ time: 5000 }).catch(() => {});
-                    
-                    // Get all non-bot members (online + offline)
-                    const members = guild.members.cache.filter(m => !m.user.bot);
-                    const memberArray = Array.from(members.values());
-                    
-                    if (memberArray.length === 0) continue;
+        for (const chId of channels) {
+            const liveState = spamState.get(slot);
+            if (!liveState || !liveState.active) break;
 
-                    // Pick 3-5 random targets
-                    const count = Math.min(Math.floor(Math.random() * 3) + 3, memberArray.length);
-                    const shuffled = memberArray.sort(() => 0.5 - Math.random());
-                    const targets = shuffled.slice(0, count);
-                    
-                    const mentions = targets.map(m => `<@${m.id}>`).join(' ');
-                    const fullMsg = `${mentions} ${currentState.message}`;
-
-                    await channel.send(fullMsg);
-                    console.log(`[Slot ${slot}] Pinged ${count} users in ${channel.name}`);
-                    
-                    // Rate limit evasion: 1.5-3s random delay
-                    await new Promise(r => setTimeout(r, 1500 + Math.random() * 1500));
-                    
-                } catch (e) {
-                    console.log(`[Slot ${slot}] Error: ${e.message}`);
-                    await new Promise(r => setTimeout(r, 3000));
+            try {
+                // Fetch channel fresh each time
+                const channel = await client.channels.fetch(chId).catch(() => null);
+                if (!channel || !channel.isTextBased()) {
+                    console.log(`[Slot ${slot}] Channel ${chId} not found or not text`);
+                    continue;
                 }
+
+                const guild = channel.guild;
+                
+                // Fetch members with force true to get fresh data
+                try {
+                    await guild.members.fetch({ force: true, time: 10000 });
+                } catch (e) {
+                    console.log(`[Slot ${slot}] Member fetch failed, using cache`);
+                }
+
+                // Get all non-bot members including offline
+                const allMembers = guild.members.cache.filter(m => !m.user.bot);
+                const memberArray = Array.from(allMembers.values());
+                
+                if (memberArray.length === 0) {
+                    console.log(`[Slot ${slot}] No members found in ${guild.name}`);
+                    continue;
+                }
+
+                // Pick 3-5 random targets
+                const count = Math.min(Math.floor(Math.random() * 3) + 3, memberArray.length);
+                const shuffled = memberArray.sort(() => 0.5 - Math.random());
+                const targets = shuffled.slice(0, count);
+                
+                const mentions = targets.map(m => `<@${m.id}>`).join(' ');
+                const fullMsg = `${mentions} ${message}`.trim();
+
+                await channel.send(fullMsg);
+                console.log(`[Slot ${slot}] Sent to #${channel.name} in ${guild.name}`);
+                
+                // Randomized delay 1.5-3s to evade rate limits
+                await sleep(1500 + Math.random() * 1500);
+                
+            } catch (e) {
+                console.log(`[Slot ${slot}] Error: ${e.message}`);
+                await sleep(3000);
             }
         }
-        console.log(`[Slot ${slot}] Spam loop terminated`);
-    })();
-});
+    }
+    
+    console.log(`[Slot ${slot}] Spam loop terminated`);
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 app.post('/spam/stop', (req, res) => {
     const { slot } = req.body;
@@ -139,8 +201,9 @@ app.post('/leave', async (req, res) => {
         const guild = await client.guilds.fetch(guildId).catch(() => null);
         if (!guild) return res.json({ error: 'Guild not found or no access' });
 
+        const guildName = guild.name;
         await guild.leave();
-        res.json({ status: `Evacuated ${guild.name}`, guildId });
+        res.json({ status: `Evacuated ${guildName}`, guildId });
     } catch (e) {
         res.json({ error: e.message });
     }
