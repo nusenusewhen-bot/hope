@@ -1,12 +1,14 @@
 [phases.setup]
-nixPkgs = ["nodejs", "chromium"]
+nixPkgs = ["nodejs"]
 
 [phases.build]
-cmds = ["npm install"]
+cmds = [
+  "npm install",
+  "npx puppeteer browsers install chrome"
+]
 
 [start]
 cmd = "node index.js"
 
 [variables]
-PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
-PUPPETEER_EXECUTABLE_PATH = "/usr/bin/chromium-browser"
+PUPPETEER_EXECUTABLE_PATH = "/app/.cache/puppeteer/chrome/linux-*/chrome-linux/chrome"
