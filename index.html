@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SelfBot Command</title>
+<style>
+body{background:#0a0a0a;color:#0f0;font-family:monospace;padding:20px}
+.box{background:#111;border:1px solid #333;padding:15px;margin:10px 0}
+input,textarea{background:#222;color:#0f0;border:1px solid #444;padding:8px;width:300px;margin:5px;display:block}
+button{background:#ff0040;color:#fff;border:none;padding:10px 20px;cursor:pointer;margin:5px;font-weight:bold}
+.green{background:#0f0;color:#000}
+.orange{background:#ff6600}
+</style>
+</head>
+<body>
+<h1>🔥 MASS PING & EVACUATION PANEL 🔥</h1>
+<div id="slots"></div>
+<script>
+const API='';
+for(let i=0;i<10;i++){
+document.getElementById('slots').innerHTML+=`
+<div class="box">
+<h3>Bot #${i+1}</h3>
+<input id="t${i}" placeholder="Token">
+<input id="c${i}" placeholder="Channel IDs (comma sep)">
+<textarea id="m${i}" placeholder="Custom ping message" rows="2"></textarea>
+<input id="l${i}" placeholder="Server ID to leave">
+<button onclick="init(${i})">INIT</button>
+<button class="green" onclick="start(${i})">START SPAM</button>
+<button onclick="stop(${i})">STOP</button>
+<button class="orange" onclick="leave(${i})">LEAVE SERVER</button>
+<div id="s${i}" style="color:#ff0040;margin-top:5px">Ready</div>
+</div>`;
+}
+async function init(i){await fetch('/init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:document.getElementById('t'+i).value,slot:i})});document.getElementById('s'+i).innerText='Online';}
+async function start(i){const c=document.getElementById('c'+i).value.split(',').map(x=>x.trim());await fetch('/configure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:i,channels:c,message:document.getElementById('m'+i).value})});await fetch('/spam/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:i})});document.getElementById('s'+i).innerText='SPAMMING ACTIVE';}
+async function stop(i){await fetch('/spam/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:i})});document.getElementById('s'+i).innerText='Stopped';}
+async function leave(i){const r=await fetch('/leave',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:i,guildId:document.getElementById('l'+i).value})});const d=await r.json();document.getElementById('s'+i).innerText=d.status||'Done';}
+</script>
+</body>
+</html>
