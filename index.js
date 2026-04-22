@@ -108,7 +108,7 @@ function makeDiscordRequest(email, password) {
                 'Sec-Fetch-Mode': 'cors',
                 'Sec-Fetch-Site': 'same-origin',
                 'X-Discord-Timezone': 'Asia/Calcutta',
-                'X-Super-Properties': 'eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiaGFzX2NsaWVudF9tb2RzIjpmYWxzZSwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEzNC4wLjAuMCBTYWZhcmIvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTM0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjM4NDg4NywiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0='
+                'X-Super-Properties': 'eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiaGFzX2NsaWVudF9tb2RzIjpmYWxzZSwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSHRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEzNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTM0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjM4NDg4NywiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0='
             }
         };
 
@@ -203,16 +203,45 @@ function saveAccount(email, password, token, status) {
     }
 }
 
-// Find downloaded Chrome binary
+// FIXED: Properly resolve Chrome binary path without wildcards
 function findChrome() {
     const cacheDir = path.join(__dirname, '.cache', 'puppeteer');
-    if (!fs.existsSync(cacheDir)) return null;
-    
-    const entries = fs.readdirSync(cacheDir);
-    for (const entry of entries) {
-        const chromePath = path.join(cacheDir, entry, 'chrome-linux', 'chrome');
-        if (fs.existsSync(chromePath)) return chromePath;
+    if (!fs.existsSync(cacheDir)) {
+        console.log('[CHROME] Cache dir not found:', cacheDir);
+        return null;
     }
+    
+    console.log('[CHROME] Searching in:', cacheDir);
+    const entries = fs.readdirSync(cacheDir, { withFileTypes: true });
+    
+    for (const entry of entries) {
+        if (entry.isDirectory()) {
+            const chromePath = path.join(cacheDir, entry.name, 'chrome-linux', 'chrome');
+            console.log('[CHROME] Checking:', chromePath);
+            if (fs.existsSync(chromePath)) {
+                console.log('[CHROME] Found:', chromePath);
+                return chromePath;
+            }
+        }
+    }
+    
+    // Fallback: search deeper
+    for (const entry of entries) {
+        if (entry.isDirectory()) {
+            const subEntries = fs.readdirSync(path.join(cacheDir, entry.name), { withFileTypes: true });
+            for (const sub of subEntries) {
+                if (sub.isDirectory()) {
+                    const chromePath = path.join(cacheDir, entry.name, sub.name, 'chrome-linux', 'chrome');
+                    if (fs.existsSync(chromePath)) {
+                        console.log('[CHROME] Found (deep):', chromePath);
+                        return chromePath;
+                    }
+                }
+            }
+        }
+    }
+    
+    console.log('[CHROME] Not found in cache');
     return null;
 }
 
@@ -243,13 +272,18 @@ async function generateAccount() {
             '--disable-blink-features=AutomationControlled'
         ];
 
-        // Find downloaded Chrome or use system fallback
+        // FIXED: Properly discover Chrome binary
         let executablePath = findChrome();
+        
+        // Also check env var if set (without wildcards)
         if (!executablePath && process.env.PUPPETEER_EXECUTABLE_PATH) {
-            executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+            const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
+            if (fs.existsSync(envPath)) {
+                executablePath = envPath;
+            }
         }
         
-        console.log(`[GEN] Chrome path: ${executablePath || 'default'}`);
+        console.log(`[GEN] Chrome path: ${executablePath || 'Puppeteer default'}`);
 
         browser = await puppeteer.launch({
             headless: "new",
