@@ -114,7 +114,6 @@ button:disabled {
 <script>
 const API = '';
 
-// Generate 10 slots
 for (let i = 0; i < 10; i++) {
     document.getElementById('slots').innerHTML += `
     <div class="slot" id="slot-${i}">
@@ -144,10 +143,14 @@ async function login(i) {
     const userDiv = document.getElementById(`user-${i}`);
     const status = document.getElementById(`status-${i}`);
     
-    if (!token) return;
+    if (!token) {
+        userDiv.innerText = 'Enter a token first';
+        userDiv.className = 'user-info error';
+        return;
+    }
     
     btn.disabled = true;
-    userDiv.innerText = 'Validating...';
+    userDiv.innerText = 'Validating token...';
     userDiv.className = 'user-info';
     
     try {
@@ -164,22 +167,21 @@ async function login(i) {
             status.innerText = 'ONLINE';
             status.className = 'status online';
             
-            // Enable controls
             document.getElementById(`c${i}`).disabled = false;
             document.getElementById(`m${i}`).disabled = false;
             document.getElementById(`l${i}`).disabled = false;
             document.getElementById(`btn-start-${i}`).disabled = false;
             document.getElementById(`btn-stop-${i}`).disabled = false;
             document.getElementById(`btn-leave-${i}`).disabled = false;
-            btn.style.display = 'none'; // Hide login button after success
+            btn.style.display = 'none';
         } else {
-            userDiv.innerText = 'Invalid token';
+            userDiv.innerText = data.error || 'Invalid token';
             userDiv.className = 'user-info error';
             status.innerText = 'FAILED';
             btn.disabled = false;
         }
     } catch (e) {
-        userDiv.innerText = 'Connection error';
+        userDiv.innerText = 'Network error: ' + e.message;
         userDiv.className = 'user-info error';
         btn.disabled = false;
     }
